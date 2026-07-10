@@ -1,0 +1,11 @@
+# runtime state/log di mentis (compaiono nei progetti-target, non nel tool)
+.mentis/
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+
+# os / editor
+.DS_Store
+*.swp
