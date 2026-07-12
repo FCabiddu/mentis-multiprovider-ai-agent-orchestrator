@@ -186,12 +186,12 @@ Orchestrator-Worker per il fan-out per-issue.
 
 Ordine: **reflection prima** (build + esecuzione), poi evaluator.
 
-### Configurabilità — due livelli che si intersecano
-- **Per-agente (capability):** l'agente dichiara cosa supporta
-  (`reflection: true/false`, `evaluator: true/false`).
-- **Di sessione (intensità):** manopola `--quality`:
-  `off` | `reflect` | `evaluate` | `full` (reflection→evaluator).
-- L'orchestratore applica `min(intensità_sessione, capability_agente)`.
+### Configurabilità — due livelli
+- **Per-agente (profilo):** in `config/mentis.toml` sotto `[quality.profile]`
+  (non nel frontmatter dell'agente): livello di default per agente.
+- **Di sessione (override):** manopola `--quality`:
+  `off` | `reflect` | `evaluate` | `full` (reflection→evaluator), che sovrascrive
+  globalmente il profilo.
 
 ### Default quando l'utente non specifica — PESATO SUL RISCHIO (non `full` piatto)
 Motivo: reflection su prosa rende poco, e su abbonamento flat ogni chiamata
@@ -349,7 +349,46 @@ Pacchetto di rifiniture, tutte testate in dry-run + unit test:
   task sullo stesso provider insieme (eviterebbe di accelerare il rate-limit). In
   dry-run le wave sono mostrate ma eseguite in sequenza.
 
-## 13. Cosa resta da fare quando attivi gli abbonamenti
+## 13. Review esterno e hardening (Tier A applicato)
+
+Un review tecnico avversariale esterno ha esaminato mentis in dry-run e ha
+trovato bug di **integrazione non ancora esercitata** (coerenti con lo stato
+"mai eseguito dal vivo"). Diagnosi-radice condivisa: *il contratto tra
+orchestratore e agenti era prosa, non un'interfaccia*. **Bloccanti corretti:**
+
+- **Crash sul DEPS del planner** — il planner scriveva `issueMap`/`dependencies`
+  (formato Linear), il parser voleva `issues[]` → `AttributeError`. Ora esiste
+  **uno schema canonico unico** `{"issues":[{id,title,label,deps}]}`, il planner
+  lo produce, e `load_issues` è tollerante (converte il legacy, valida, avvisa e
+  ritorna `None` invece di crashare).
+- **Fan-out prima del planner** — `expand_units` girava una volta a inizio run,
+  prima che il planner scrivesse il DEPS. Ora l'espansione è **lazy per-step**
+  (`expand_step`): developer/reviewer si espandono quando si arriva al loro turno,
+  leggendo il DEPS appena prodotto.
+- **`produced_output` sempre vero** — le scritture di mentis stesso (`.mentis/`)
+  facevano passare unità vuote per `done`. Ora la verifica **esclude `.mentis/`**
+  (git dirty filtrato, mtime che salta `.mentis/`), e l'orchestratore gitignora
+  `.mentis/` nel progetto-target.
+- **Falso positivo rate-limit** — il grep girava su stdout di merito (un TAD che
+  *parla* di "429" triggerava un fallback spurio). Ora: `rate_limited` solo se
+  **rc≠0 E** pattern su **stderr**.
+- **Loop quality ignoravano gli errori** — l'output di una CLI fallita/limite
+  finiva in `parse_verdict` come NEEDS WORK spurio. Ora evaluator/reviewer/loop
+  **onorano `ok`/`rate_limited`** ed escalano (o aprono il breaker) invece di
+  fabbricare un verdetto.
+- **Label hardcoded, review-arg perso, reasoning no-op, mvp path assoluto** —
+  label reale dal DEPS; `reviewer_loop` riceve l'argomento utente; hint di
+  reasoning iniettato nel prompt per provider senza flag `{reasoning}` (Claude);
+  mvp-builder scrive relativo al progetto.
+
+**Debito residuo (Tier B, non ancora fatto):** i *corpi* degli agenti sono ancora
+Claude-oriented (usano `AskUserQuestion`, Linear, `gh`, spawn nel reviewer) e la
+neutralità è garantita solo dal `NEUTRALITY_PREAMBLE` in prosa — vanno sostituiti
+con **adapter provider-neutral** e un **contratto di esecuzione strutturato**
+(`done | needs_input | failed`) con HITL riprendibile. Inoltre: isolamento
+worktree per `--parallel`, invalidazione dipendenze nel resume, suite di test.
+
+## 14. Cosa resta da fare quando attivi gli abbonamenti
 
 1. Installare le CLI e fare login con gli **abbonamenti**.
 2. `enabled = true` sui provider in `mentis.toml`.

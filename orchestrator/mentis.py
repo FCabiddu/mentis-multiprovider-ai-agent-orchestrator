@@ -336,16 +336,37 @@ def git_head(project: Path):
 
 
 def git_dirty(project: Path) -> bool:
+    """True se il working tree ha modifiche, ESCLUSE le scritture di mentis (.mentis/)."""
     try:
         r = subprocess.run(["git", "-C", str(project), "status", "--porcelain"],
                            capture_output=True, text=True, timeout=10)
-        return r.returncode == 0 and bool(r.stdout.strip())
+        if r.returncode != 0:
+            return False
+        for line in r.stdout.splitlines():
+            path = line[3:].strip()
+            if path and not path.startswith(".mentis"):
+                return True
+        return False
     except Exception:
         return False
 
 
+def ensure_gitignore(project: Path):
+    """Nel progetto-target, assicura che .mentis/ sia gitignorato (stato/log/transcript)."""
+    gi = project / ".gitignore"
+    try:
+        existing = gi.read_text() if gi.exists() else ""
+        if ".mentis" not in existing:
+            sep = "" if (not existing or existing.endswith("\n")) else "\n"
+            with open(gi, "a") as f:
+                f.write(f"{sep}.mentis/\n")
+    except Exception:
+        pass
+
+
 def produced_output(project: Path, unit, dry_run: bool, pre_head, started_at) -> bool:
-    """Check STRETTO post-esecuzione: l'unità ha davvero prodotto qualcosa?"""
+    """Check STRETTO post-esecuzione: l'unità ha davvero prodotto qualcosa?
+    Esclude sempre le scritture dell'orchestratore stesso (.mentis/)."""
     if dry_run:
         return True
     glob = EXPECTED_ARTIFACT.get(unit.step)
@@ -353,9 +374,11 @@ def produced_output(project: Path, unit, dry_run: bool, pre_head, started_at) ->
         return any(project.glob(glob))
     if unit.step in IMPLEMENTING_STEPS:                 # developer/qa/devops/mvp
         head = git_head(project)
-        if head is not None:                           # repo git: HEAD avanzato o tree sporco
+        if head is not None:                           # repo git: HEAD avanzato o tree sporco (no .mentis)
             return head != pre_head or git_dirty(project)
-        for p in project.rglob("*"):                   # non-git: qualche file toccato dopo l'avvio
+        for p in project.rglob("*"):                   # non-git: file toccati dopo l'avvio, ESCLUSO .mentis/
+            if ".mentis" in p.parts:
+                continue
             try:
                 if p.is_file() and p.stat().st_mtime >= started_at:
                     return True
@@ -376,28 +399,44 @@ class Unit:
 
 
 def load_issues(project: Path):
-    """Issue + dipendenze da implementation-plans/*_DEPS.json (o None se assente)."""
+    """Issue da implementation-plans/*_DEPS.json. Schema CANONICO UNICO:
+         {"issues": [ {"id": "...", "title": "...", "label": "Backend|Frontend|DevOps",
+                       "deps": ["id", ...]}, ... ]}
+    Tollerante: valida e in caso di formato non conforme AVVISA e ritorna None
+    (niente fan-out) invece di crashare. Mai iterare valori arbitrari come issue."""
     files = sorted(project.glob("implementation-plans/*_DEPS.json"))
     if not files:
         return None
     try:
         data = json.loads(files[0].read_text())
-    except Exception:
+    except Exception as e:
+        print(f"    ⚠ DEPS illeggibile ({files[0].name}): {e} — niente fan-out")
         return None
-    raw = data.get("issues", data) if isinstance(data, dict) else data
-    issues, order = {}, []
-    if isinstance(raw, dict):
-        items = raw.items()
+    if isinstance(data, dict) and isinstance(data.get("issueMap"), dict):
+        # formato legacy pocket-it (issueMap + dependencies Linear) → converto in issues[]
+        deps_by = {}
+        for d in data.get("dependencies", []):
+            if isinstance(d, dict) and d.get("blockedPlanId") and d.get("blockerPlanId"):
+                deps_by.setdefault(d["blockedPlanId"], []).append(d["blockerPlanId"])
+        raw = [{"id": k, "title": (v or {}).get("title", k),
+                "label": (v or {}).get("label", "Backend"), "deps": deps_by.get(k, [])}
+               for k, v in data["issueMap"].items()]
     else:
-        items = [(it.get("id"), it) for it in raw if isinstance(it, dict)]
-    for iid, v in items:
-        if not iid:
-            continue
-        v = v or {}
-        issues[iid] = {"id": iid, "title": v.get("title", iid),
-                       "deps": v.get("deps", v.get("dependencies", []))}
+        raw = data.get("issues") if isinstance(data, dict) else data
+    if not isinstance(raw, list):
+        print(f"    ⚠ DEPS {files[0].name}: manca la lista 'issues' "
+              f"[{{id,title,label,deps}}] — niente fan-out (unità singola)")
+        return None
+    issues, order = {}, []
+    for it in raw:
+        if not isinstance(it, dict) or not it.get("id"):
+            continue                                   # scarta voci non conformi, mai crash
+        iid = str(it["id"])
+        issues[iid] = {"id": iid, "title": it.get("title", iid),
+                       "label": it.get("label", "Backend"),
+                       "deps": [str(d) for d in it.get("deps", it.get("dependencies", []))]}
         order.append(iid)
-    return _toposort(issues, order)
+    return _toposort(issues, order) if issues else None
 
 
 def _toposort(issues: dict, order: list):
@@ -422,17 +461,14 @@ def _toposort(issues: dict, order: list):
 FANOUT_STEPS = {"developer", "reviewer"}
 
 
-def expand_units(steps: list, project: Path) -> list:
-    """Espande gli step in unità: developer/reviewer → una per issue (se c'è un DEPS)."""
-    units = []
-    for step in steps:
-        issues = load_issues(project) if step in FANOUT_STEPS else None
-        if issues:
-            for iss in issues:
-                units.append(Unit(f"{step}::{iss['id']}", step, iss))
-        else:
-            units.append(Unit(step, step))
-    return units
+def expand_step(step: str, project: Path) -> list:
+    """Espande UN singolo step in unità, leggendo il DEPS AL MOMENTO (lazy).
+    Va chiamato quando si arriva allo step: così developer/reviewer vedono il
+    *_DEPS.json che il planner ha scritto POCO PRIMA nella stessa pipeline."""
+    issues = load_issues(project) if step in FANOUT_STEPS else None
+    if issues:
+        return [Unit(f"{step}::{iss['id']}", step, iss) for iss in issues]
+    return [Unit(step, step)]
 
 
 # --------------------------------------------------------------------------- #
@@ -531,6 +567,8 @@ def run_on_provider(agent, provider, prompt, project, cfg, dry_run):
     prompt = NEUTRALITY_PREAMBLE + prompt          # contratto di neutralità in testa
     model, reasoning_value, level = resolve(agent, provider, cfg)
     template = cfg["providers"][provider]["cmd"]
+    if "{reasoning}" not in template:              # provider senza flag reasoning (es. Claude):
+        prompt += f"\n\n[mentis] Reasoning effort richiesto: {level}."   # passa il segnale nel prompt
     argv = build_command(template, prompt, model, reasoning_value)
     printable = " ".join(shlex.quote(a) if a != prompt else "<PROMPT>" for a in argv)
 
@@ -551,8 +589,10 @@ def run_on_provider(agent, provider, prompt, project, cfg, dry_run):
         log_call(project, {**base, "error": "timeout"}, prompt, "TIMEOUT")
         return {"ok": False, "rate_limited": False, "error": "timeout"}
     combined = (r.stdout or "") + "\n" + (r.stderr or "")
-    rate_limited = bool(RATE_LIMIT_PATTERNS.search(combined))
-    ok = (r.returncode == 0) and not rate_limited
+    # rate-limit SOLO se la CLI è fallita (rc≠0) E il pattern è su STDERR (non sullo
+    # stdout di merito: un BAD/TAD che *parla* di "429/rate limit" non deve triggerare).
+    rate_limited = (r.returncode != 0) and bool(RATE_LIMIT_PATTERNS.search(r.stderr or ""))
+    ok = (r.returncode == 0)
     if r.stdout:
         print(r.stdout.rstrip())
     log_call(project, {**base, "chars_out": len(combined), "returncode": r.returncode,
@@ -702,6 +742,11 @@ def evaluator_loop(agent, unit, author_provider, project, cfg, dry_run, breaker,
                        f"Concludi con UNA riga esattamente in questo formato: "
                        f"`VERDICT: APPROVED` oppure `VERDICT: NEEDS WORK`.")
         res = run_on_provider(agent, evaluator, eval_prompt, project, cfg, dry_run)
+        if not res.get("ok") and not dry_run:                # CLI fallita/limite ≠ verdetto
+            if res.get("rate_limited"):
+                breaker[evaluator] = True
+            print(f"    ⚠ evaluator {evaluator} fallito/limite → escalation (verdetto non ottenibile)")
+            return {"status": "escalated", "reason": "evaluator-call-failed"}
         charge(state, evaluator, "evaluate", cfg, project)
         verdict, critique = parse_verdict(res.get("output", ""), dry_run)
         if verdict == "APPROVED":
@@ -717,7 +762,12 @@ def evaluator_loop(agent, unit, author_provider, project, cfg, dry_run, breaker,
         opt_prompt = (f"[mentis optimizer] Un valutatore indipendente (modello diverso) ha rivisto "
                       f"{artifact} e ha sollevato:\n{critique}\nRivedi l'artefatto per risolvere "
                       f"tutti i punti, senza introdurre regressioni.")
-        run_on_provider(agent, author_provider, opt_prompt, project, cfg, dry_run)
+        ores = run_on_provider(agent, author_provider, opt_prompt, project, cfg, dry_run)
+        if not ores.get("ok") and not dry_run:
+            if ores.get("rate_limited"):
+                breaker[author_provider] = True
+            print(f"    ⚠ optimizer {author_provider} fallito/limite → escalation")
+            return {"status": "escalated", "reason": "optimizer-call-failed"}
         charge(state, author_provider, "optimize", cfg, project)
     return {"status": "approved"}
 
@@ -730,7 +780,8 @@ def apply_quality(agent, unit, author_provider, project, cfg, level, dry_run, br
     return {"status": "approved"}
 
 
-def reviewer_loop(reviewer_agent, unit, implementer, project, cfg, dry_run, breaker, state):
+def reviewer_loop(reviewer_agent, unit, implementer, project, cfg, dry_run, breaker, state,
+                  user_input=""):
     """Lo step reviewer come evaluator-optimizer: review → se NEEDS WORK ri-dispaccia il
     developer sull'implementer → re-review, fino a cap, poi escalation."""
     cap = cfg.get("quality", {}).get("loop_cap", 2)
@@ -743,15 +794,21 @@ def reviewer_loop(reviewer_agent, unit, implementer, project, cfg, dry_run, brea
     rp = indep[0]                                  # reviewer = indipendente più scarico
     dev_agent = load_agent("developer")
     issue_txt = f"Issue: {unit.issue['id']} — {unit.issue['title']}\n" if unit.issue else ""
+    arg_txt = f"Da revisionare: {user_input}\n" if user_input else ""   # PR/branch passato dall'utente
 
     for rnd in range(cap + 1):
         print(f"    ⇄ review @ {rp} (implementer={implementer}) — giro {rnd + 1}")
-        rv_input = (f"{issue_txt}Rivedi la PR/il codice di questo lavoro come reviewer indipendente. "
-                    f"Concludi con UNA riga: `VERDICT: APPROVED` oppure `VERDICT: NEEDS WORK` "
-                    f"(+ problemi numerati se NEEDS WORK).")
+        rv_input = (f"{arg_txt}{issue_txt}Rivedi la PR/il codice di questo lavoro come reviewer "
+                    f"indipendente. Concludi con UNA riga: `VERDICT: APPROVED` oppure "
+                    f"`VERDICT: NEEDS WORK` (+ problemi numerati se NEEDS WORK).")
         prompt = compose_prompt(reviewer_agent, rv_input, project, unit.id,
                                 extra=f"Implemented-by: {implementer}\nReviewer-provider: {rp}")
         res = run_on_provider(reviewer_agent, rp, prompt, project, cfg, dry_run)
+        if not res.get("ok") and not dry_run:
+            if res.get("rate_limited"):
+                breaker[rp] = True
+            print(f"    ⚠ reviewer {rp} fallito/limite → escalation (verdetto non ottenibile)")
+            return {"status": "escalated", "reason": "reviewer-call-failed", "provider": rp}
         charge(state, rp, "evaluate", cfg, project)
         verdict, critique = parse_verdict(res.get("output", ""), dry_run)
         if verdict == "APPROVED":
@@ -767,7 +824,12 @@ def reviewer_loop(reviewer_agent, unit, implementer, project, cfg, dry_run, brea
         fix_input = (f"{issue_txt}Un reviewer indipendente ha chiesto modifiche:\n{critique}\n"
                      f"Applica le correzioni al codice, senza introdurre regressioni.")
         dev_prompt = compose_prompt(dev_agent, fix_input, project, unit.id, resuming=True)
-        run_on_provider(dev_agent, implementer, dev_prompt, project, cfg, dry_run)
+        rres = run_on_provider(dev_agent, implementer, dev_prompt, project, cfg, dry_run)
+        if not rres.get("ok") and not dry_run:
+            if rres.get("rate_limited"):
+                breaker[implementer] = True
+            print(f"    ⚠ rework {implementer} fallito/limite → escalation")
+            return {"status": "escalated", "reason": "rework-call-failed", "provider": rp}
         charge(state, implementer, "optimize", cfg, project)
     return {"status": "approved", "provider": rp}
 
@@ -920,7 +982,7 @@ def process_unit(ctx, unit, force_provider=None):
     unit_input = ctx["user_input"]
     if unit.issue:
         unit_input = (f"Issue: {unit.issue['id']} — {unit.issue['title']}\n"
-                      f"Label: Backend\n{unit_input}")
+                      f"Label: {unit.issue.get('label', 'Backend')}\n{unit_input}")
     h = input_hash(agent, unit_input)
     prev = state["units"].get(unit.id)
     label = unit.id + (f"  ({unit.issue['title']})" if unit.issue else "")
@@ -950,7 +1012,8 @@ def process_unit(ctx, unit, force_provider=None):
 
     # --- REVIEWER: loop review→rework (evaluator-optimizer) ---
     if unit.step == "reviewer":
-        rev = reviewer_loop(agent, unit, implementer, project, cfg, dry_run, breaker, state)
+        rev = reviewer_loop(agent, unit, implementer, project, cfg, dry_run, breaker, state,
+                            user_input=ctx["user_input"])
         status = "escalated" if rev["status"] == "escalated" else ("planned" if dry_run else "done")
         mark_unit(project, state, unit.id, status=status, provider=rev.get("provider"),
                   quality_status=rev["status"])
@@ -1058,20 +1121,19 @@ def main():
         print("   ⓘ DRY-RUN: mostro il piano, non eseguo (attiva un provider in config per eseguire)")
     print(f"   pipeline '{args.command}': {' → '.join(steps)}\n")
 
-    units = expand_units(steps, project)
     state = {"units": {}} if args.fresh else load_state(project)
     state["command"] = args.command
-    if len(units) != len(steps):
-        print(f"   fan-out: {len(steps)} step → {len(units)} unità (developer/reviewer per-issue)")
+    ensure_gitignore(project)          # .mentis/ non deve finire nei commit del progetto-target
     print()
 
     # --- COMPARE: challenge, nessuno stato/resume (è un confronto, non un build) ---
     if mode == "compare":
-        for i, unit in enumerate(units, 1):
-            agent = load_agent(unit.step)
-            print(f"▸ [{i}/{len(units)}] {unit.id}  (tier={agent.tier}, reasoning={agent.reasoning})")
-            run_unit_compare(agent, user_input, project, cfg, dry_run, unit.id)
-            print()
+        for step in steps:
+            for unit in expand_step(step, project):
+                agent = load_agent(unit.step)
+                print(f"▸ {unit.id}  (tier={agent.tier}, reasoning={agent.reasoning})")
+                run_unit_compare(agent, user_input, project, cfg, dry_run, unit.id)
+                print()
         print("✔ fine (compare).")
         return
 
@@ -1081,31 +1143,41 @@ def main():
            "dry_run": dry_run, "user_input": user_input, "quality_override": args.quality}
 
     parallel = args.parallel and not dry_run and len(available_providers(cfg)) >= 2
+    if args.parallel and not dry_run:
+        print("   ⚠ --parallel: le unità concorrenti CONDIVIDONO la working dir; l'isolamento")
+        print("     git (worktree per-unità) è ancora TODO — usalo con cautela su agenti che committano.\n")
+
     stop = False
-    for wave in build_waves(units, cfg, args.parallel):
+    for step in steps:                              # LAZY: espando lo step ADESSO
         if stop:
             break
-        if len(wave) > 1:
-            print(f"⛓ wave {'parallela' if parallel else '(sequenziale in dry-run)'}: {[u.id for u in wave]}")
-        if parallel and len(wave) > 1:
-            ordered = ordered_candidates(available_providers(cfg), cfg, state)
-            with ThreadPoolExecutor(max_workers=len(wave)) as ex:
-                futs = {ex.submit(process_unit, ctx, u, ordered[k % len(ordered)]): u
-                        for k, u in enumerate(wave)}
-                results = {futs[f].id: f.result() for f in futs}
-        else:
-            results = {}
+        step_units = expand_step(step, project)     # fan-out letto DOPO che il planner ha scritto il DEPS
+        if len(step_units) > 1:
+            print(f"   ⤷ {step}: fan-out in {len(step_units)} unità (per-issue)")
+        for wave in build_waves(step_units, cfg, args.parallel):
+            if stop:
+                break
+            if len(wave) > 1:
+                print(f"⛓ wave {'parallela' if parallel else '(sequenziale)'}: {[u.id for u in wave]}")
+            if parallel and len(wave) > 1:
+                ordered = ordered_candidates(available_providers(cfg), cfg, state)
+                with ThreadPoolExecutor(max_workers=len(wave)) as ex:
+                    futs = {ex.submit(process_unit, ctx, u, ordered[k % len(ordered)]): u
+                            for k, u in enumerate(wave)}
+                    results = {futs[f].id: f.result() for f in futs}
+            else:
+                results = {}
+                for u in wave:
+                    results[u.id] = process_unit(ctx, u)
+                    if results[u.id]["status"] in ("failed", "escalated"):
+                        break
             for u in wave:
-                results[u.id] = process_unit(ctx, u)
-                if results[u.id]["status"] in ("failed", "escalated"):
-                    break
-        for u in wave:
-            r = results.get(u.id)
-            if r and r["status"] in ("failed", "escalated"):
-                print(f"    ⛔ STOP su {u.id} ({r['status']}) — stato in {state_path(project)};")
-                print(f"      rilancia lo stesso comando per riprendere (le 'done' si saltano), --fresh per azzerare.")
-                stop = True
-        print()
+                r = results.get(u.id)
+                if r and r["status"] in ("failed", "escalated"):
+                    print(f"    ⛔ STOP su {u.id} ({r['status']}) — stato in {state_path(project)};")
+                    print(f"      rilancia lo stesso comando per riprendere (le 'done' si saltano), --fresh per azzerare.")
+                    stop = True
+            print()
 
     if cfg.get("routing") == "balanced" and state.get("budget"):
         costs = "  ".join(f"{p}={current_cost(state, p, cfg):.1f}"

@@ -107,7 +107,7 @@ python3 orchestrator/mentis.py status --project ~/dev/todo
 
 ## Stato attuale: DRY-RUN
 
-> ⚠️ mentis è **completo e testato in dry-run + unit test**, ma non ha ancora eseguito una chiamata reale (nessun abbonamento attivo: entrambi i provider sono `enabled = false`). In dry-run stampa **il piano** — chi farebbe cosa, su quale provider/modello, con quale comando — senza eseguire nulla.
+> ⚠️ **Stato onesto.** La *logica* di mentis è validata in dry-run e con controlli manuali mirati (rotazione ruoli, anti-bias, escalation, circuit breaker, parsing DEPS). **Non** esiste ancora una suite di test automatica, e mentis **non ha mai eseguito una chiamata reale** (nessun abbonamento attivo: entrambi i provider sono `enabled = false`). In dry-run stampa **il piano** — chi farebbe cosa, su quale provider/modello, con quale comando — senza eseguire nulla. Un review tecnico esterno ha fatto emergere una serie di bug di integrazione (contratto DEPS, timing del fan-out, verifica output, rilevamento rate-limit): i bloccanti sono stati corretti; il debito architetturale residuo — corpi degli agenti ancora Claude-oriented, contratto di esecuzione strutturato — è tracciato in `DESIGN.md`.
 
 ### Attivare un provider
 

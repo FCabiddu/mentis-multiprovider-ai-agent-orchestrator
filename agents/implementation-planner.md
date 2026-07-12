@@ -538,30 +538,24 @@ For each pair, look up both IDs in the tracking map built in Step 6d. If either 
 
 **3. Write the deps JSON file.**
 
-Write `./implementation-plans/{SNAKE_CASE_NAME}_DEPS.json` with this structure:
+Write `./implementation-plans/{SNAKE_CASE_NAME}_DEPS.json` with this **canonical schema** — è il contratto che l'orchestratore legge per il fan-out per-issue, quindi rispettalo esattamente:
 
 ```json
 {
-  "project": "{SNAKE_CASE_NAME}",
-  "generatedAt": "{today's date}",
-  "issueMap": {
-    "STORY-1.1": { "linearId": "<uuid>", "linearIdentifier": "LIN-41", "title": "..." },
-    "T-1.1.1":   { "linearId": "<uuid>", "linearIdentifier": "LIN-42", "title": "..." }
-  },
-  "dependencies": [
-    {
-      "blockedPlanId": "T-1.2.1",
-      "blockedLinearIdentifier": "LIN-55",
-      "blockedLinearId": "<uuid>",
-      "blockerPlanId": "T-1.1.1",
-      "blockerLinearIdentifier": "LIN-42",
-      "blockerLinearId": "<uuid>"
-    }
+  "issues": [
+    { "id": "T-1.1.1", "title": "Implement auth API", "label": "Backend",  "deps": [] },
+    { "id": "T-1.2.1", "title": "Login UI",           "label": "Frontend", "deps": ["T-1.1.1"] }
   ]
 }
 ```
 
-Include all issues in `issueMap` (stories and tasks). Include only resolved Internal pairs in `dependencies`.
+Regole dello schema (obbligatorie):
+- `issues` è una **lista** di oggetti (mai un dizionario di dizionari).
+- `id`: identificatore stabile della issue (stringa). `title`: breve.
+- `label`: uno tra `Backend` | `Frontend` | `DevOps` (guida il branch dell'agente developer).
+- `deps`: lista di `id` di altre issue che questa **richiede** completate prima (nessun ciclo).
+
+Includi **tutte** le issue implementabili (stories e task). Niente campi Linear qui: questo file è il contratto provider-agnostico dell'orchestratore.
 
 **4. Set native Linear blocking relations (requires `LINEAR_API_TOKEN`).**
 
