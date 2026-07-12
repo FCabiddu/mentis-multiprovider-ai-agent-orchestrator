@@ -406,12 +406,20 @@ sono stati riscritti direttamente nei corpi (non solo coperti dal preambolo):
 - `business-analyst.md` — **`AskUserQuestion` rimosso**: le domande bloccanti
   passano dal contratto `needs_input`, altrimenti default + assunzioni documentate.
 
-**Ancora da fare:** gli altri corpi (`developer`, `qa-engineer`, `devops-engineer`,
-`documentation-agent`, `mvp-builder`, `tech-architect`) contengono ancora menzioni
-sparse di Linear/`gh`/`AskUserQuestion` (perlopiù "optionally") — sono più a basso
-rischio (il `NEUTRALITY_PREAMBLE` le sovrascrive) ma vanno ripulite. Inoltre:
-isolamento **worktree** per `--parallel` (unità concorrenti condividono la working
-dir → collisione git); dispatch reale del fix-CI end-to-end.
+**Tutti i 9 corpi ora neutralizzati** (parte 3): rimosse le chiamate reali
+`AskUserQuestion` (→ contratto `needs_input` o default inferiti+documentati) e
+`mcp__claude_ai_Linear__*` in developer/qa/devops/mvp/tech-architect/planner/docs.
+Auto-merge: niente più domanda interattiva né file `/tmp` insicuro → default
+Manual approval. Rimosso il blocco `curl` all'API Linear e il riferimento fantasma
+alla CLAUDE.md. *Nota onesta:* i sotto-passi Linear `6a–6d` del planner restano
+fisicamente nel file ma sono **morti** (saltati dallo Step 6 + vietati dal
+preambolo); una rimozione fisica completa è un cleanup a costo/rischio non
+giustificato ora.
+
+**Ancora da fare:** isolamento **worktree** per `--parallel` (unità concorrenti
+condividono la working dir → collisione git); dispatch reale del fix-CI end-to-end;
+rimozione fisica dei sotto-passi Linear morti del planner. Poi i v2 (balancer,
+terzo provider, preflight auth).
 
 ## 14. Cosa resta da fare quando attivi gli abbonamenti
 
