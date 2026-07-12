@@ -381,12 +381,27 @@ orchestratore e agenti era prosa, non un'interfaccia*. **Bloccanti corretti:**
   reasoning iniettato nel prompt per provider senza flag `{reasoning}` (Claude);
   mvp-builder scrive relativo al progetto.
 
-**Debito residuo (Tier B, non ancora fatto):** i *corpi* degli agenti sono ancora
-Claude-oriented (usano `AskUserQuestion`, Linear, `gh`, spawn nel reviewer) e la
-neutralità è garantita solo dal `NEUTRALITY_PREAMBLE` in prosa — vanno sostituiti
-con **adapter provider-neutral** e un **contratto di esecuzione strutturato**
-(`done | needs_input | failed`) con HITL riprendibile. Inoltre: isolamento
-worktree per `--parallel`, invalidazione dipendenze nel resume, suite di test.
+**Tier B — parte applicata:**
+- **Contratto di esito strutturato** (`CONTRACT_INSTRUCTION` + `parse_result`):
+  ogni agente principale chiude con `[[MENTIS-RESULT]]{"status":"done|needs_input|
+  failed", "artifacts", "questions", "note"}[[/MENTIS-RESULT]]`. L'orchestratore
+  consuma un'**interfaccia**, non prosa. (Il reviewer resta su `VERDICT:`.)
+- **HITL riprendibile** — `needs_input` → le domande vanno su
+  `.mentis/questions/{unit}.md`, l'unità va in `awaiting_input`, la pipeline si
+  ferma; l'utente risponde in `.mentis/answers/{unit}.md` e al rilancio l'unità
+  riprende con le risposte iniettate. Sostituisce `AskUserQuestion` (incompatibile
+  con headless).
+- **Resume dependency-aware** — `input_hash` include `upstream_hash` (BAD/TAD/IPD):
+  un artefatto a monte cambiato invalida i downstream `done`.
+- **Suite di test** — `tests/test_mentis.py` (stdlib `unittest`, 20 test): parser
+  TOML, `load_issues` (canonico/legacy/garbage/anti-crash), balancer, verdict,
+  result, toposort, waves, no-shell-injection, flusso HITL.
+
+**Tier B — ancora da fare:** i *corpi* degli agenti restano Claude-oriented
+(Linear, `gh`, spawn nel reviewer) dietro il `NEUTRALITY_PREAMBLE` in prosa →
+servono **adapter provider-neutral** per-agente. Inoltre: isolamento **worktree**
+per `--parallel` (le unità concorrenti condividono la working dir), dispatch reale
+del fix-CI del reviewer (oggi devops non è instradato).
 
 ## 14. Cosa resta da fare quando attivi gli abbonamenti
 

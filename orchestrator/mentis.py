@@ -261,6 +261,21 @@ NEUTRALITY_PREAMBLE = (
     "---\n"
 )
 
+# Contratto di ESITO strutturato: ogni agente principale chiude con un blocco
+# machine-readable. È l'interfaccia (non la prosa) che l'orchestratore consuma.
+CONTRACT_INSTRUCTION = (
+    "\n\n---\n[mentis — contratto di esito] Come ULTIMA cosa del tuo output, emetti "
+    "ESATTAMENTE un blocco così (JSON valido su una riga tra i marcatori):\n"
+    "[[MENTIS-RESULT]]\n"
+    '{"status": "done|needs_input|failed", "artifacts": ["path/relativi/prodotti"], '
+    '"questions": ["domande bloccanti per l\'umano"], "note": "una riga"}\n'
+    "[[/MENTIS-RESULT]]\n"
+    "Regole: usa `needs_input` SOLO per decisioni che spettano davvero all'umano "
+    "(non conferme banali) elencandole in `questions`; NON usare tool interattivi — "
+    "le domande vanno SOLO in questo blocco. `done` con gli `artifacts` che hai scritto. "
+    "`failed` + `note` se non puoi completare."
+)
+
 
 def state_path(project: Path) -> Path:
     return project / ".mentis" / "state.json"
@@ -307,15 +322,44 @@ def log_call(project: Path, entry: dict, prompt: str = "", output: str = ""):
         fn.write_text(f"=== PROMPT ===\n{prompt}\n\n=== OUTPUT ===\n{output}")
 
 
-def input_hash(agent: "Agent", unit_input: str) -> str:
+def upstream_hash(project: Path) -> str:
+    """Hash degli artefatti a monte (BAD/TAD/IPD): se cambiano, i downstream sono stale."""
+    h = hashlib.sha1()
+    for sub in ("business-analysis", "tech-analysis", "implementation-plans"):
+        d = project / sub
+        if d.is_dir():
+            for f in sorted(d.glob("*")):
+                if f.is_file():
+                    try:
+                        h.update(f.read_bytes())
+                    except Exception:
+                        pass
+    return h.hexdigest()[:12]
+
+
+def input_hash(agent: "Agent", unit_input: str, project: Path = None) -> str:
     h = hashlib.sha1()
     h.update(agent.body.encode()); h.update(b"\0"); h.update(unit_input.encode())
+    if project is not None:                       # dependency-aware: include gli artefatti a monte
+        h.update(b"\0"); h.update(upstream_hash(project).encode())
     return h.hexdigest()[:12]
 
 
 def handoff_path(project: Path, uid: str) -> Path:
     safe = re.sub(r"[^A-Za-z0-9_.-]", "_", uid)
     return project / ".mentis" / "handoff" / f"{safe}.md"
+
+
+def _safe(uid: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", uid)
+
+
+def questions_path(project: Path, uid: str) -> Path:
+    return project / ".mentis" / "questions" / f"{_safe(uid)}.md"
+
+
+def answers_path(project: Path, uid: str) -> Path:
+    return project / ".mentis" / "answers" / f"{_safe(uid)}.md"
 
 
 def artifact_ok(project: Path, step: str, dry_run: bool) -> bool:
@@ -549,8 +593,8 @@ def pick_provider(agent_name: str, candidates: list, cfg: dict, implementer: str
 #  Esecuzione di uno step
 # --------------------------------------------------------------------------- #
 def compose_prompt(agent: Agent, unit_input: str, project: Path, uid: str,
-                   extra: str = "", resuming: bool = False) -> str:
-    """Inietta l'input + l'istruzione di handoff; se si riprende, rilegge la nota."""
+                   extra: str = "", resuming: bool = False, contract: bool = True) -> str:
+    """Inietta l'input + handoff + contratto di esito; se si riprende, rilegge la nota."""
     body = agent.body.replace("{{ARGUMENTS}}", unit_input)
     hp = handoff_path(project, uid)
     body += HANDOFF_INSTRUCTION.format(handoff=hp)
@@ -560,7 +604,23 @@ def compose_prompt(agent: Agent, unit_input: str, project: Path, uid: str,
                  "\n---\nRiparti da lì: NON rifare ciò che è già sotto `Fatto:`.")
     if extra:
         body += "\n\n" + extra
+    if contract:
+        body += CONTRACT_INSTRUCTION
     return body
+
+
+def parse_result(output: str):
+    """Estrae l'ultimo blocco [[MENTIS-RESULT]]{json}[[/MENTIS-RESULT]] dall'output.
+    Ritorna il dict, o None se assente/illeggibile (l'orchestratore ripiega su 'done')."""
+    if not output:
+        return None
+    blocks = re.findall(r"\[\[MENTIS-RESULT\]\](.*?)\[\[/MENTIS-RESULT\]\]", output, re.DOTALL)
+    if not blocks:
+        return None
+    try:
+        return json.loads(blocks[-1].strip())
+    except Exception:
+        return None
 
 
 def run_on_provider(agent, provider, prompt, project, cfg, dry_run):
@@ -632,7 +692,7 @@ def run_unit_with_fallback(agent, unit, unit_input, project, cfg, implementer,
         prompt = compose_prompt(agent, unit_input, project, unit.id, extra, resuming)
         res = run_on_provider(agent, prov, prompt, project, cfg, dry_run)
         if res.get("ok"):
-            return {"provider": prov, "ok": True}
+            return {"provider": prov, "ok": True, "output": res.get("output", "")}
 
         # --- layered fallback ---
         if res.get("rate_limited"):
@@ -802,7 +862,8 @@ def reviewer_loop(reviewer_agent, unit, implementer, project, cfg, dry_run, brea
                     f"indipendente. Concludi con UNA riga: `VERDICT: APPROVED` oppure "
                     f"`VERDICT: NEEDS WORK` (+ problemi numerati se NEEDS WORK).")
         prompt = compose_prompt(reviewer_agent, rv_input, project, unit.id,
-                                extra=f"Implemented-by: {implementer}\nReviewer-provider: {rp}")
+                                extra=f"Implemented-by: {implementer}\nReviewer-provider: {rp}",
+                                contract=False)
         res = run_on_provider(reviewer_agent, rp, prompt, project, cfg, dry_run)
         if not res.get("ok") and not dry_run:
             if res.get("rate_limited"):
@@ -823,7 +884,8 @@ def reviewer_loop(reviewer_agent, unit, implementer, project, cfg, dry_run, brea
         print(f"    ✎ rework @ {implementer} (developer): giro {rnd + 1}/{cap}")
         fix_input = (f"{issue_txt}Un reviewer indipendente ha chiesto modifiche:\n{critique}\n"
                      f"Applica le correzioni al codice, senza introdurre regressioni.")
-        dev_prompt = compose_prompt(dev_agent, fix_input, project, unit.id, resuming=True)
+        dev_prompt = compose_prompt(dev_agent, fix_input, project, unit.id, resuming=True,
+                                    contract=False)
         rres = run_on_provider(dev_agent, implementer, dev_prompt, project, cfg, dry_run)
         if not rres.get("ok") and not dry_run:
             if rres.get("rate_limited"):
@@ -960,7 +1022,8 @@ def cmd_status(project, cfg):
     if units:
         c = Counter(u.get("status", "?") for u in units.values())
         print("   unità:", "  ".join(f"{k}={v}" for k, v in sorted(c.items())))
-        for tag, mark in (("escalated", "⛔ escalation (attendono te)"), ("failed", "✗ fallite")):
+        for tag, mark in (("awaiting_input", "⏸ in attesa di risposte (rispondi in .mentis/answers/)"),
+                          ("escalated", "⛔ escalation (attendono te)"), ("failed", "✗ fallite")):
             ids = [uid for uid, u in units.items() if u.get("status") == tag]
             if ids:
                 print(f"   {mark}: {', '.join(ids)}")
@@ -983,7 +1046,7 @@ def process_unit(ctx, unit, force_provider=None):
     if unit.issue:
         unit_input = (f"Issue: {unit.issue['id']} — {unit.issue['title']}\n"
                       f"Label: {unit.issue.get('label', 'Backend')}\n{unit_input}")
-    h = input_hash(agent, unit_input)
+    h = input_hash(agent, unit_input, project)     # dependency-aware (include gli artefatti a monte)
     prev = state["units"].get(unit.id)
     label = unit.id + (f"  ({unit.issue['title']})" if unit.issue else "")
     print(f"▸ {label}  (tier={agent.tier}, reasoning={agent.reasoning})")
@@ -993,6 +1056,16 @@ def process_unit(ctx, unit, force_provider=None):
             and artifact_ok(project, unit.step, dry_run)):
         print(f"    ⤿ già completata su {prev.get('provider')} — salto (resume)")
         return {"status": "skipped", "provider": prev.get("provider")}
+
+    # HITL: unità che aveva chiesto input umano — riprende SOLO se ci sono le risposte
+    if prev and prev.get("status") == "awaiting_input":
+        ap = answers_path(project, unit.id)
+        if ap.exists() and ap.read_text().strip():
+            unit_input += "\n\n[Risposte dell'utente alle tue domande]\n" + ap.read_text().strip()
+            print(f"    ✍ risposte trovate ({ap.name}) — riprendo con le risposte iniettate")
+        else:
+            print(f"    ⏸ in attesa di risposte: rispondi in {answers_path(project, unit.id)} e rilancia")
+            return {"status": "awaiting_input", "provider": prev.get("provider")}
 
     resuming = bool(prev and prev.get("status") == "running")
     if resuming:
@@ -1026,6 +1099,26 @@ def process_unit(ctx, unit, force_provider=None):
                                  dry_run, resuming, breaker, budget, state, force_provider)
     if res.get("ok"):
         charge(state, res.get("provider"), role_weight_kind(unit.step), cfg, project)
+
+    # --- contratto di esito strutturato dichiarato dall'agente ---
+    result = parse_result(res.get("output", "")) or {}
+    rstatus = result.get("status")
+    if res.get("ok") and rstatus == "needs_input":
+        qs = result.get("questions") or []
+        qp = questions_path(project, unit.id)
+        qp.parent.mkdir(parents=True, exist_ok=True)
+        qp.write_text(f"# Domande di {unit.id}\n\n" + "\n".join(f"- {q}" for q in qs) +
+                      f"\n\nScrivi le risposte in `{answers_path(project, unit.id).name}` "
+                      f"(cartella .mentis/answers/) e rilancia lo stesso comando per riprendere.\n")
+        mark_unit(project, state, unit.id, status="awaiting_input",
+                  provider=res.get("provider"), questions=qs)
+        print(f"    ⏸ {unit.id} richiede input umano ({len(qs)} domande) → {qp}")
+        return {"status": "awaiting_input", "provider": res.get("provider")}
+    if res.get("ok") and rstatus == "failed":
+        mark_unit(project, state, unit.id, status="failed", provider=res.get("provider"),
+                  reason=result.get("note", "l'agente ha dichiarato failed"))
+        print(f"    ✗ {unit.id}: l'agente ha dichiarato failed ({result.get('note', '')})")
+        return {"status": "failed", "provider": res.get("provider")}
 
     author = res.get("provider")
     level = quality_level(unit.step, cfg, ctx["quality_override"])
@@ -1169,13 +1262,16 @@ def main():
                 results = {}
                 for u in wave:
                     results[u.id] = process_unit(ctx, u)
-                    if results[u.id]["status"] in ("failed", "escalated"):
+                    if results[u.id]["status"] in ("failed", "escalated", "awaiting_input"):
                         break
             for u in wave:
                 r = results.get(u.id)
-                if r and r["status"] in ("failed", "escalated"):
-                    print(f"    ⛔ STOP su {u.id} ({r['status']}) — stato in {state_path(project)};")
-                    print(f"      rilancia lo stesso comando per riprendere (le 'done' si saltano), --fresh per azzerare.")
+                if r and r["status"] in ("failed", "escalated", "awaiting_input"):
+                    if r["status"] == "awaiting_input":
+                        print(f"    ⏸ PAUSA su {u.id}: rispondi in .mentis/answers/ e rilancia lo stesso comando.")
+                    else:
+                        print(f"    ⛔ STOP su {u.id} ({r['status']}) — stato in {state_path(project)};")
+                        print(f"      rilancia lo stesso comando per riprendere (le 'done' si saltano), --fresh per azzerare.")
                     stop = True
             print()
 

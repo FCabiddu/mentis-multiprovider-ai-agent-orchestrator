@@ -61,6 +61,8 @@ Ogni passo scrive il suo artefatto su disco; il passo dopo lo legge. È questo �
 | ⛓ | **Parallelismo** | Issue indipendenti su provider distinti in contemporanea (`--parallel`). |
 | 🩺 | **doctor** | Aggiorna la mappa dei modelli quando esce una nuova famiglia — scoperta automatica, decisione tua. |
 | 🧭 | **Osservabilità** | Ogni chiamata loggata; `mentis status` riassume carico, finestre, stato. |
+| 📇 | **Contratto strutturato** | Ogni agente chiude con `[[MENTIS-RESULT]]{status,...}`: l'orchestratore consuma un'interfaccia, non prosa. |
+| ⏸ | **HITL riprendibile** | `needs_input` mette in pausa e scrive le domande su file; rispondi in `.mentis/answers/` e rilancia per riprendere. |
 
 Perché **a subscription e non ad API**: gli abbonamenti consumer (ChatGPT Plus, Claude Pro/Max) non danno accesso API — ma ogni vendor spedisce una **CLI agentica** che si autentica con l'abbonamento. mentis pilota quelle CLI in headless. I *tool* (leggere/scrivere file, eseguire comandi) li porta ogni CLI; l'orchestratore fa solo da regista.
 
@@ -107,7 +109,7 @@ python3 orchestrator/mentis.py status --project ~/dev/todo
 
 ## Stato attuale: DRY-RUN
 
-> ⚠️ **Stato onesto.** La *logica* di mentis è validata in dry-run e con controlli manuali mirati (rotazione ruoli, anti-bias, escalation, circuit breaker, parsing DEPS). **Non** esiste ancora una suite di test automatica, e mentis **non ha mai eseguito una chiamata reale** (nessun abbonamento attivo: entrambi i provider sono `enabled = false`). In dry-run stampa **il piano** — chi farebbe cosa, su quale provider/modello, con quale comando — senza eseguire nulla. Un review tecnico esterno ha fatto emergere una serie di bug di integrazione (contratto DEPS, timing del fan-out, verifica output, rilevamento rate-limit): i bloccanti sono stati corretti; il debito architetturale residuo — corpi degli agenti ancora Claude-oriented, contratto di esecuzione strutturato — è tracciato in `DESIGN.md`.
+> ⚠️ **Stato onesto.** La logica di mentis è coperta da una **suite di test** (`tests/`, stdlib `unittest` — esegui `python3 -m unittest discover -s tests`) e validata in dry-run. Ma mentis **non ha mai eseguito una chiamata reale** (nessun abbonamento attivo: entrambi i provider sono `enabled = false`): in dry-run stampa **il piano** senza eseguire nulla. Un review tecnico esterno ha fatto emergere bug di integrazione (crash sullo schema DEPS, timing del fan-out, verifica output, rate-limit): i **bloccanti sono corretti**, ed è stato aggiunto un **contratto di esito strutturato** (`done|needs_input|failed`) con **HITL riprendibile**. Il debito residuo — corpi degli agenti ancora Claude-oriented dietro un adapter di prosa — è tracciato in `DESIGN.md §13`.
 
 ### Attivare un provider
 
