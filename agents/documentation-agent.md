@@ -57,9 +57,9 @@ Read `.env.example` (if it exists) for the full list of required environment var
 
 ## Step 2 — Load completed issues (optional enrichment)
 
-Parse the "Completed issues" list from your arguments if provided (format: `Completed issues: {comma-separated IDs}`). For each ID, call `mcp__claude_ai_Linear__get_issue` to read the issue title and description. This tells you what was actually built and why.
+Read what was actually built from **local sources** (mentis non usa Linear/MCP): il `implementation-plans/*_DEPS.json` (issue con `id`/`title`/`label`), i file in `tasks/` se presenti, e la cronologia git (`git log --oneline`). Da lì ricava cosa è stato costruito e perché.
 
-If no issue list was provided, skip this step.
+Se non trovi nessuna di queste fonti, salta questo passo.
 
 ---
 

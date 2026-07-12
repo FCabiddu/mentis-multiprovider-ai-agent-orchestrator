@@ -16,14 +16,7 @@ The user has provided: {{ARGUMENTS}}
 Check if `{{ARGUMENTS}}` begins with the word `simple`, `medium`, or `full` (case-insensitive).
 
 - **Yes** → extract it as `PROJECT_SCOPE`, strip it from the arguments, treat the remainder as the actual input.
-- **No** → use `AskUserQuestion` once:
-
-  > "What's the project scope?
-  > - **simple** — static site, landing page, or small frontend-only project
-  > - **medium** — product with a backend, small SaaS, small e-commerce
-  > - **full** — multi-team enterprise product, complex data model, production-grade"
-
-  Wait for the answer. Store it as `PROJECT_SCOPE`. Proceed with the original arguments unchanged.
+- **No** → **inferisci** `PROJECT_SCOPE` (simple = sito statico/landing/frontend-only; medium = prodotto con backend/piccolo SaaS/e-commerce; full = enterprise multi-team, dati complessi, production-grade). Se non inferibile e la scelta cambia sostanzialmente il TAD, emetti `needs_input` (contratto); altrimenti assumi **medium** e annotalo. Prosegui con gli argomenti originali invariati. Non usare `AskUserQuestion`.
 
 Then read the BAD file(s) provided. Look for a `| Project Scope |` row in the metadata table.
 - **Found** → extract `MVP` or `Full Production` — use it for **architecture style decisions** (managed platforms vs full infra, monolith vs microservices).
@@ -43,7 +36,7 @@ Then read the BAD file(s) provided. Look for a `| Project Scope |` row in the me
 
 **`medium` skip rules:** omit any section that is genuinely not applicable (e.g. no auth → skip auth rows in Section 6). Keep all applicable sections but prefer tables over prose — no padding.
 
-**Section numbering is a contract.** The section and subsection numbers in the template below are referenced by every downstream agent (developer, devops-engineer, qa-engineer, reviewer, documentation-agent) — see the "TAD section map" in this repo's CLAUDE.md. Never renumber or reorder them. When a section is skipped, keep the heading with a one-line `N/A — {reason}` instead of removing it, so the numbering of all other sections stays stable.
+**Section numbering is a contract.** The section and subsection numbers in the template below are referenced by every downstream agent (developer, devops-engineer, qa-engineer, reviewer, documentation-agent). Never renumber or reorder them. When a section is skipped, keep the heading with a one-line `N/A — {reason}` instead of removing it, so the numbering of all other sections stays stable.
 
 ### MVP architecture rules (when BAD says MVP)
 - Modular monolith, no microservices
@@ -62,9 +55,9 @@ Then read the BAD file(s) provided. Look for a `| Project Scope |` row in the me
 - **File path**: Read with the Read tool.
 - **Folder path**: `find "{path}" -type f`, read relevant files.
 - **Free text**: Use directly.
-- **Empty**: Ask "What would you like me to architect?" and wait.
+- **Empty**: nessun input — emetti `needs_input` (contratto) chiedendo cosa architettare.
 
-After ingesting, only ask blocking questions (cloud provider preference, hard constraints) that you cannot infer. One `AskUserQuestion` call, bundled.
+After ingesting, se restano scelte **davvero bloccanti** che non puoi inferire (es. preferenza cloud, vincoli hard), elencale nel blocco `needs_input` del contratto; altrimenti procedi con default motivati e annotali. Non usare `AskUserQuestion`.
 
 ---
 
@@ -76,11 +69,11 @@ A business requirement is any functional or non-functional constraint the BAD ex
 
 **Rule:** You may decide technology freely (stack, libraries, patterns, infra). You may NOT silently substitute a different solution for a business requirement. If your technical instinct conflicts with a requirement, you must:
 
-1. Use `AskUserQuestion` to surface the conflict — state:
-   - What the BAD requires
-   - What you would propose instead and **why** (technical reason, risk, cost, complexity)
-   - Ask explicitly: "Can I proceed with this change, or do you want to keep the original requirement?"
-2. **Wait for the answer.** Do not start Step 2 or write any part of the TAD until the user responds.
+1. Emetti `needs_input` (contratto) per portare a galla il conflitto — indica:
+   - Cosa richiede il BAD
+   - Cosa proporresti invece e **perché** (ragione tecnica, rischio, costo, complessità)
+   - Chiedi esplicitamente: "Procedo con questa modifica o tengo il requisito originale?"
+2. La pipeline si ferma (contratto `needs_input`) finché l'utente non risponde: non scrivere il TAD prima. Non usare `AskUserQuestion`.
 3. If the user approves the change, proceed and document it as an ADR with the user's rationale.
 4. If the user says no, honour the original requirement exactly as stated.
 

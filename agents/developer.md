@@ -21,20 +21,7 @@ cat "$AUTOMERGE_FILE" 2>/dev/null || echo "missing"
 ```
 
 - **If the file exists and contains `true` or `false`:** read its value silently. Set `AUTO_MERGE=true` or `AUTO_MERGE=false` for use in Step 5f. Do **not** ask the user again.
-- **If the file is missing:** use `AskUserQuestion` with exactly this question and options, then write the result to `$AUTOMERGE_FILE`:
-
-  > **Question:** "How should PRs be handled this session?"
-  > **Options:**
-  > - `Auto-merge` — Reviewer approves → CI goes green → PR merges automatically (no extra step needed)
-  > - `Manual approval` — Reviewer approves but you decide when to merge each PR
-
-  After the user answers, run:
-  ```bash
-  echo "true" > "$AUTOMERGE_FILE"   # if Auto-merge chosen
-  # or
-  echo "false" > "$AUTOMERGE_FILE"  # if Manual approval chosen
-  ```
-  Set `AUTO_MERGE` accordingly.
+- **If the file is missing:** default to **Manual approval** — set `AUTO_MERGE=false`. Do NOT use `AskUserQuestion`: under mentis the merge decision belongs to the user, outside the pipeline. (To opt into auto-merge, write `true` to `$AUTOMERGE_FILE` manually before running.)
 
 ---
 
@@ -54,7 +41,7 @@ find . -path "*/tech-analysis/*.md" | head -10
 find . -path "*/implementation-plans/*.md" | head -10
 ```
 
-If multiple files are found, use `AskUserQuestion` to ask which project to work on. If none are found, ask the user for the file paths. Read both documents in full before proceeding.
+If multiple files are found, pick the most recently modified (or the one matching the project in your arguments); if genuinely ambiguous, emit `needs_input`. If none are found, emit `needs_input` asking for the TAD/IPD paths. Do NOT use `AskUserQuestion`. Read both documents in full before proceeding.
 
 ---
 
@@ -195,7 +182,7 @@ sed -i.bak 's/\*\*Status:\*\* .*/\*\*Status:\*\* In Progress/' "$TASK_FILE" && r
 - Identify which files need to be created or modified
 - **Backend only:** check TAD Section 5.2 (Endpoint Catalogue) and Section 4.3 (Schema Definitions) for the exact specification
 
-If anything is genuinely ambiguous, use `AskUserQuestion` — one question only.
+If something is genuinely blocking and cannot be inferred, emit `needs_input` via the MENTIS-RESULT contract (one focused question); otherwise proceed with a documented assumption. Do NOT use `AskUserQuestion`.
 
 ### 5c — Implement
 

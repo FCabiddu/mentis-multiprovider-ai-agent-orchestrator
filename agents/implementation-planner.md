@@ -16,17 +16,14 @@ Check if `{{ARGUMENTS}}` begins with the word `simple`, `medium`, or `full` (cas
 - **Yes** → extract it as `PROJECT_SCOPE`, strip it from the arguments, treat the remainder as the actual input. Skip question 1 below.
 - **No** → include question 1 in the bundle below.
 
-Use `AskUserQuestion` once with all relevant questions:
+**Inferisci** i parametri del piano da input e contesto, con questi default ragionevoli (non usare `AskUserQuestion`; niente Linear sotto mentis):
 
-> "Before I build the plan, I need a few details:
->
-> 1. **Project scope** *(skip if already provided)*: Is this a **simple** (single feature / small site), **medium** (small product with backend), or **full** (enterprise product, multiple teams) project?
-> 2. **Team size**: How many engineers will work on this? (e.g. 1 solo, 2–3 small team, 4–6 mid, 7+ large)
-> 3. **Methodology**: Agile sprints, Kanban, or phased waterfall?
-> 4. **Sprint length** (if agile): 1 week, 2 weeks, or 3 weeks?
-> 5. **Push to Linear?**: Should I create the Epics, Stories, and Tasks directly in Linear when done? (yes/no)"
+1. **Project scope**: inferisci simple/medium/full (default: **medium**).
+2. **Team size**: default **2–3 (small team)** salvo indicazioni diverse.
+3. **Methodology**: default **Agile sprints**.
+4. **Sprint length**: default **2 settimane**.
 
-Wait for the answer. Store these as the **plan parameters** — let them govern every decision in the document. If the user gives partial answers, infer reasonable defaults for the rest and proceed.
+Solo se una di queste dimensioni è **davvero bloccante** e non inferibile (cambia sostanzialmente il piano), emetti `needs_input` (contratto) elencando le domande; altrimenti procedi con i default e annotali nelle Assumptions.
 
 **Output caps:**
 
@@ -44,14 +41,14 @@ Wait for the answer. Store these as the **plan parameters** — let them govern 
 
 Determine what the input is:
 
-- **Empty / no argument**: Use `AskUserQuestion` to ask: "What would you like me to plan? You can give me a file path to a TAD or BAD, a folder containing both, or describe the project in plain text." Do not continue until input is received.
+- **Empty / no argument**: emetti `needs_input` (contratto) chiedendo cosa pianificare (path a TAD/BAD, cartella, o descrizione). Non usare `AskUserQuestion`; non continuare finché non arriva l'input.
 - **File path** (ends with `.md`, `.txt`, `.pdf`, or the path resolves to a file): Use Read to read its full content. If two documents are found (TAD + BAD), read both.
 - **Folder path** (the path resolves to a directory): Use Bash `find "{{ARGUMENTS}}" -type f` to list all files. Read all TAD, BAD, and spec documents found. Summarise what you found before writing the plan.
 - **Free text** (anything else): Use it directly as the project description.
 
 If reading a path fails, treat the input as free text.
 
-After ingesting, if any **blocking planning dimension** is ambiguous (e.g. must-have features for v1, hard deadline, team skill gaps), use `AskUserQuestion` to ask — one question per call, only what is truly blocking.
+After ingesting, if any **blocking planning dimension** is genuinely ambiguous (e.g. must-have features for v1, hard deadline, team skill gaps), emit `needs_input` (contract) listing only what is truly blocking; otherwise proceed with documented assumptions. Do NOT use `AskUserQuestion`.
 
 ---
 
@@ -525,21 +522,9 @@ You will need this map in Step 6e. Do not discard it.
 
 ---
 
-### 6e — Set dependency relations
+### 6e — Costruisci il grafo delle dipendenze → scrivi il DEPS.json canonico
 
-After all issues are created, use the tracking map from Step 6d and the Blocking Dependencies Table from Section 5 to set blocking relations.
-
-**1. Parse dependencies from Section 5.**
-
-Read the Blocking Dependencies Table. For every row where `Type` is `Internal`, extract the pair:
-- `blocked`: the STORY or EPIC ID in the "Item" column (e.g. `STORY-2.1`, `T-1.2.1`)
-- `blocker`: the STORY or EPIC ID in the "Blocked By" column (e.g. `STORY-1.1`, `T-1.1.2`)
-
-Skip External dependencies — those cannot be set in Linear.
-
-**2. Resolve to Linear data.**
-
-For each pair, look up both IDs in the tracking map built in Step 6d. If either ID is not in the map (e.g. the blocker is an Epic that was created as a milestone, not an issue), skip that pair and note it.
+Ricava le dipendenze dalla **Blocking Dependencies Table** (Sezione 5): per ogni riga `Internal` prendi la coppia (`blocked` = ID nella colonna "Item", `blocker` = ID nella colonna "Blocked By"). Ignora le `External`. Poi scrivi il file canonico qui sotto.
 
 **3. Write the deps JSON file.**
 
@@ -562,38 +547,7 @@ Regole dello schema (obbligatorie):
 
 Includi **tutte** le issue implementabili (stories e task). Niente campi Linear qui: questo file è il contratto provider-agnostico dell'orchestratore.
 
-**4. Set native Linear blocking relations (requires `LINEAR_API_TOKEN`).**
-
-Check if the environment variable is available:
-
-```bash
-echo "${LINEAR_API_TOKEN:-NOT_SET}"
-```
-
-If the output is `NOT_SET`, skip to step 5.
-
-If the token is available, for each resolved dependency pair run:
-
-```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: ${LINEAR_API_TOKEN}" \
-  -H "Content-Type: application/json" \
-  --data-raw '{
-    "query": "mutation CreateRelation($issueId: String!, $relatedIssueId: String!, $type: IssueRelationTypeInput!) { issueRelationCreate(input: {issueId: $issueId, relatedIssueId: $relatedIssueId, type: $type}) { success } }",
-    "variables": {
-      "issueId": "{blockedLinearId}",
-      "relatedIssueId": "{blockerLinearId}",
-      "type": "blocked_by"
-    }
-  }'
-```
-
-Check each response. If `"success": true`, the native blocking arrow is set on the Linear board. If an error is returned, note it — the deps JSON file is the fallback and the pipeline still works.
-
-**5. Note in the Step 7 report:**
-- How many dependency pairs were found, resolved, and written to the deps file
-- Whether native Linear relations were set (token present / token absent / errors)
-- If token was absent: `"Set LINEAR_API_TOKEN to your Linear personal API key to enable native blocking arrows on the board. The deps file is used by /developer either way."`
+**4. Note nel report dello Step 7:** quante coppie di dipendenze sono state trovate e scritte nel file DEPS canonico. (Nessuna integrazione Linear/API sotto mentis: il DEPS.json è l'unico artefatto di dipendenze.)
 
 ---
 

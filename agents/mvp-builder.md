@@ -17,7 +17,7 @@ Extract from the arguments:
 - **Description**: what the user wants to build
 - **Accent colour** (optional): any colour preference the user specified
 
-If the description is missing or too vague to act on, use `AskUserQuestion` to ask for it. One question only.
+If the description is missing or too vague to act on, emit `needs_input` (contract) asking for it — one focused question. Do NOT use `AskUserQuestion`.
 
 Derive a **project slug** from the description:
 - Take the first 3–5 significant words (skip articles, prepositions, conjunctions)
@@ -232,11 +232,9 @@ These are your animation tools. Study all of them. Pick 3–5 that serve this sp
 
 ## Step 0.5 — Client brief (optional)
 
-Ask the user exactly this one question using `AskUserQuestion`:
+Se negli argomenti è presente un percorso a un file di brief o un URL del cliente, usalo. Altrimenti **salta** questo passo (non è bloccante) e procedi con la descrizione che hai; solo se un brief è indispensabile e assente, emetti `needs_input` (contratto). Non usare `AskUserQuestion`.
 
-> "Hai un documento o URL con info sul cliente? (es. `~/Desktop/prospect/ristorante-terramare/brief.md`, un URL del sito esistente, o lascia vuoto per saltare)"
-
-Then act on the answer:
+Quando un brief è disponibile, agisci così:
 
 - **Path to a file** (ends in `.md`, `.txt`, etc.) → Read it with the Read tool. Extract: business name, category, address, phone, services/menu, existing copy, tone of voice, any colour or style clues.
 - **URL** → WebFetch it. Extract: business name, tagline, services, colour palette (look for CSS custom properties or repeated hex values in `<style>` tags), any copy worth reusing.

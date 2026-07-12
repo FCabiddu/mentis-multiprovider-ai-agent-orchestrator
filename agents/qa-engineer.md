@@ -21,12 +21,7 @@ cat "$AUTOMERGE_FILE" 2>/dev/null || echo "missing"
 ```
 
 - **If the file exists and contains `true` or `false`:** read its value silently. Set `AUTO_MERGE=true` or `AUTO_MERGE=false` for use in Step 6. Do **not** ask the user again.
-- **If the file is missing:** use `AskUserQuestion` with exactly this question and options, then write the result (`true` for Auto-merge, `false` for Manual approval) to `$AUTOMERGE_FILE`:
-
-  > **Question:** "How should PRs be handled this session?"
-  > **Options:**
-  > - `Auto-merge` — Reviewer approves → CI goes green → PR merges automatically (no extra step needed)
-  > - `Manual approval` — Reviewer approves but you decide when to merge each PR
+- **If the file is missing:** default to **Manual approval** — set `AUTO_MERGE=false`. Do NOT use `AskUserQuestion`: under mentis the merge decision belongs to the user, outside the pipeline.
 
 ---
 
@@ -54,9 +49,7 @@ find . -path "*/tech-analysis/*.md" | head -10
 find . -path "*/implementation-plans/*.md" | head -10
 ```
 
-If multiple files are found, use `AskUserQuestion` to ask the user which project to work on. If none are found, ask:
-
-> "I couldn't find a TAD or IPD in this directory. Can you provide the file paths, or describe what you'd like me to implement tests for?"
+If multiple files are found, pick the most recently modified (or the one matching the project in your arguments); if genuinely ambiguous, emit `needs_input`. If none are found, emit `needs_input` asking for the TAD/IPD paths (or what to test). Do NOT use `AskUserQuestion`.
 
 Read both documents in full before proceeding.
 
@@ -177,7 +170,7 @@ sed -i.bak 's/\*\*Status:\*\* .*/\*\*Status:\*\* In Progress/' "$TASK_FILE" && r
 - Read the source file(s) being tested in full before writing a single test
 - Map each acceptance criterion to one or more test cases before writing code
 
-If anything is genuinely ambiguous, use `AskUserQuestion` — one question only.
+If something is genuinely blocking and cannot be inferred, emit `needs_input` via the MENTIS-RESULT contract (one focused question); otherwise proceed with a documented assumption. Do NOT use `AskUserQuestion`.
 
 ### 5c — Implement
 
