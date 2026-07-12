@@ -416,10 +416,22 @@ fisicamente nel file ma sono **morti** (saltati dallo Step 6 + vietati dal
 preambolo); una rimozione fisica completa è un cleanup a costo/rischio non
 giustificato ora.
 
-**Ancora da fare:** isolamento **worktree** per `--parallel` (unità concorrenti
-condividono la working dir → collisione git); dispatch reale del fix-CI end-to-end;
-rimozione fisica dei sotto-passi Linear morti del planner. Poi i v2 (balancer,
-terzo provider, preflight auth).
+**Fatto anche (senza abbonamenti, testati con git reale + dry-run):**
+- **Routing per label** — lo step `developer` instrada ogni issue all'agente giusto
+  (`Backend`/`Frontend` → developer, `DevOps` → devops-engineer via `agent_for_label`).
+  Rende **`devops-engineer` raggiungibile** (prima non era in nessuna pipeline, #8).
+- **Fix-CI dispatch** — il `reviewer_loop` ri-dispaccia il rework all'**agente che ha
+  implementato** quella issue (letto da `implementer_unit_of_issue`), non sempre il
+  developer.
+- **Worktree isolation** — in `--parallel` ogni unità implementante gira in un git
+  worktree isolato (`make_worktree`/`remove_worktree`, branch `mentis/{unit}`,
+  serializzati da `_GIT_LOCK`); niente collisione su `.git/index.lock`. Il `cwd` è
+  propagato in tutta la catena (run/quality/verifica git); il branch persiste dopo il
+  cleanup del worktree.
+
+**Ancora da fare:** rimozione fisica dei sotto-passi Linear morti del planner
+(cosmetico). Poi i v2 (balancer avanzato, terzo provider, preflight auth) — da
+tarare col primo run reale.
 
 ## 14. Cosa resta da fare quando attivi gli abbonamenti
 

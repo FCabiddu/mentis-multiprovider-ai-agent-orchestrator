@@ -39,6 +39,7 @@ from pathlib import Path
 
 _CALL_SEQ = 0                 # sequenza globale per nomi-file transcript univoci
 _STATE_LOCK = threading.Lock()  # protegge state.json in esecuzione parallela
+_GIT_LOCK = threading.Lock()    # serializza le operazioni git worktree (add/remove)
 
 ROOT = Path(__file__).resolve().parent.parent          # .../mentis
 AGENTS_DIR = ROOT / "agents"
@@ -395,6 +396,35 @@ def git_dirty(project: Path) -> bool:
         return False
 
 
+def make_worktree(project: Path, uid: str):
+    """Crea un git worktree isolato per un'unità parallela (branch mentis/{uid}).
+    Ritorna il path del worktree, o None se il progetto non è git o l'op fallisce.
+    Serializzato da _GIT_LOCK: `git worktree add` non è concorrente-safe."""
+    if git_head(project) is None:
+        return None
+    wt = project / ".mentis" / "worktrees" / _safe(uid)
+    branch = f"mentis/{_safe(uid)}"
+    with _GIT_LOCK:
+        if wt.exists():
+            return wt
+        wt.parent.mkdir(parents=True, exist_ok=True)
+        r = subprocess.run(["git", "-C", str(project), "worktree", "add", "-b", branch,
+                            str(wt), "HEAD"], capture_output=True, text=True)
+        if r.returncode != 0:                      # branch già esistente → riusa
+            r = subprocess.run(["git", "-C", str(project), "worktree", "add", str(wt), branch],
+                               capture_output=True, text=True)
+        return wt if r.returncode == 0 else None
+
+
+def remove_worktree(project: Path, wt):
+    """Rimuove il worktree (il branch resta nel repo: è il deliverable dell'unità)."""
+    if not wt:
+        return
+    with _GIT_LOCK:
+        subprocess.run(["git", "-C", str(project), "worktree", "remove", "--force", str(wt)],
+                       capture_output=True, text=True)
+
+
 def ensure_gitignore(project: Path):
     """Nel progetto-target, assicura che .mentis/ sia gitignorato (stato/log/transcript)."""
     gi = project / ".gitignore"
@@ -504,15 +534,28 @@ def _toposort(issues: dict, order: list):
 # (balancing) e va revisionata dall'altro.
 FANOUT_STEPS = {"developer", "reviewer"}
 
+# Routing per label: la issue viene implementata dall'agente giusto. È ciò che
+# rende `devops-engineer` RAGGIUNGIBILE (altrimenti non è in nessuna pipeline).
+LABEL_TO_AGENT = {"backend": "developer", "frontend": "developer",
+                  "devops": "devops-engineer", "infra": "devops-engineer",
+                  "infrastructure": "devops-engineer"}
+
+
+def agent_for_label(label: str) -> str:
+    return LABEL_TO_AGENT.get((label or "").strip().lower(), "developer")
+
 
 def expand_step(step: str, project: Path) -> list:
     """Espande UN singolo step in unità, leggendo il DEPS AL MOMENTO (lazy).
-    Va chiamato quando si arriva allo step: così developer/reviewer vedono il
-    *_DEPS.json che il planner ha scritto POCO PRIMA nella stessa pipeline."""
+    Lo step 'developer' instrada ogni issue all'agente giusto per label
+    (Backend/Frontend → developer, DevOps → devops-engineer)."""
     issues = load_issues(project) if step in FANOUT_STEPS else None
-    if issues:
-        return [Unit(f"{step}::{iss['id']}", step, iss) for iss in issues]
-    return [Unit(step, step)]
+    if not issues:
+        return [Unit(step, step)]
+    if step == "developer":
+        return [Unit(f"{agent_for_label(i['label'])}::{i['id']}",
+                     agent_for_label(i["label"]), i) for i in issues]
+    return [Unit(f"{step}::{i['id']}", step, i) for i in issues]     # reviewer
 
 
 # --------------------------------------------------------------------------- #
@@ -570,6 +613,14 @@ def last_implementer_from_state(state: dict):
     return best
 
 
+def implementer_unit_of_issue(state: dict, issue_id: str):
+    """Unità implementante di una issue, qualunque agente (developer o devops-engineer)."""
+    for uid, u in state.get("units", {}).items():
+        if u.get("step") in IMPLEMENTING_STEPS and uid.endswith(f"::{issue_id}"):
+            return u
+    return None
+
+
 def pick_provider(agent_name: str, candidates: list, cfg: dict, implementer: str | None):
     """
     Regola di routing:
@@ -623,7 +674,7 @@ def parse_result(output: str):
         return None
 
 
-def run_on_provider(agent, provider, prompt, project, cfg, dry_run):
+def run_on_provider(agent, provider, prompt, project, cfg, dry_run, cwd=None):
     prompt = NEUTRALITY_PREAMBLE + prompt          # contratto di neutralità in testa
     model, reasoning_value, level = resolve(agent, provider, cfg)
     template = cfg["providers"][provider]["cmd"]
@@ -643,7 +694,7 @@ def run_on_provider(agent, provider, prompt, project, cfg, dry_run):
         return {"ok": True, "dry_run": True}
 
     try:
-        r = subprocess.run(argv, cwd=str(project), capture_output=True,
+        r = subprocess.run(argv, cwd=str(cwd or project), capture_output=True,
                            text=True, timeout=cfg.get("timeout", 1800))
     except subprocess.TimeoutExpired:
         log_call(project, {**base, "error": "timeout"}, prompt, "TIMEOUT")
@@ -662,7 +713,8 @@ def run_on_provider(agent, provider, prompt, project, cfg, dry_run):
 
 
 def run_unit_with_fallback(agent, unit, unit_input, project, cfg, implementer,
-                           dry_run, resuming, breaker, budget, state, force_provider=None):
+                           dry_run, resuming, breaker, budget, state, force_provider=None,
+                           workdir=None):
     all_cand = available_providers(cfg) or list(cfg["preference"])  # dry-run: piano
     # routing balanced: ordina dal meno carico; escludi i circuiti aperti
     candidates = ordered_candidates([p for p in all_cand if not breaker.get(p)], cfg, state)
@@ -690,7 +742,7 @@ def run_unit_with_fallback(agent, unit, unit_input, project, cfg, implementer,
         if agent.name == "reviewer" and implementer:
             extra = f"Implemented-by: {implementer}\nReviewer-provider: {prov}"
         prompt = compose_prompt(agent, unit_input, project, unit.id, extra, resuming)
-        res = run_on_provider(agent, prov, prompt, project, cfg, dry_run)
+        res = run_on_provider(agent, prov, prompt, project, cfg, dry_run, cwd=workdir)
         if res.get("ok"):
             return {"provider": prov, "ok": True, "output": res.get("output", "")}
 
@@ -707,7 +759,7 @@ def run_unit_with_fallback(agent, unit, unit_input, project, cfg, implementer,
             if budget["left"] > 0 and not dry_run and wait:
                 print(f"    ⧖ {prov} errore transitorio → backoff {wait}s e 1 retry")
                 time.sleep(wait); budget["left"] -= 1
-                if run_on_provider(agent, prov, prompt, project, cfg, dry_run).get("ok"):
+                if run_on_provider(agent, prov, prompt, project, cfg, dry_run, cwd=workdir).get("ok"):
                     return {"provider": prov, "ok": True}
             print(f"    ✗ {prov} errore (rc={res.get('returncode')}) → fallback")
 
@@ -744,7 +796,7 @@ def rubric_for(agent_name, cfg):
     return r.get(agent_name, r.get("default", "completezza; coerenza; correttezza"))
 
 
-def reflection_pass(agent, unit, author_provider, project, cfg, dry_run, breaker, state):
+def reflection_pass(agent, unit, author_provider, project, cfg, dry_run, breaker, state, cwd=None):
     """Auto-critica sullo STESSO provider. Forte solo con feedback esterno (test)."""
     if breaker.get(author_provider):
         print("    ⤿ reflection saltata: provider autore in circuito aperto")
@@ -756,7 +808,7 @@ def reflection_pass(agent, unit, author_provider, project, cfg, dry_run, breaker
               f"direttamente nei file; se è già solido non cambiare nulla e dichiaralo. Sii onesto: "
               f"non razionalizzare i tuoi errori.")
     print(f"    ↻ reflection @ {author_provider}")
-    run_on_provider(agent, author_provider, prompt, project, cfg, dry_run)
+    run_on_provider(agent, author_provider, prompt, project, cfg, dry_run, cwd=cwd)
     charge(state, author_provider, "reflect", cfg, project)
 
 
@@ -779,7 +831,7 @@ def parse_verdict(output, dry_run):
     return "NEEDS WORK", text                                         # 3) ambiguo → conservativo
 
 
-def evaluator_loop(agent, unit, author_provider, project, cfg, dry_run, breaker, state):
+def evaluator_loop(agent, unit, author_provider, project, cfg, dry_run, breaker, state, cwd=None):
     """Evaluator su provider ≠ autore (il più scarico); loop optimizer fino a cap, poi escalation."""
     cap = cfg.get("quality", {}).get("loop_cap", 2)
     artifact = EXPECTED_ARTIFACT.get(unit.step, "l'artefatto")
@@ -790,7 +842,7 @@ def evaluator_loop(agent, unit, author_provider, project, cfg, dry_run, breaker,
     if not indep:
         print(f"    ⚠ EVALUATOR: nessun provider indipendente (autore={author_provider}, gli altri "
               f"giù/in circuito) → degrado a reflection-only + escalation.")
-        reflection_pass(agent, unit, author_provider, project, cfg, dry_run, breaker, state)
+        reflection_pass(agent, unit, author_provider, project, cfg, dry_run, breaker, state, cwd)
         return {"status": "escalated", "reason": "no-independent-provider"}
     evaluator = indep[0]                          # evaluator = più scarico tra gli indipendenti
 
@@ -801,7 +853,7 @@ def evaluator_loop(agent, unit, author_provider, project, cfg, dry_run, breaker,
                        f"Criteri: {rubric}. Se ci sono problemi, elencali numerati e azionabili. "
                        f"Concludi con UNA riga esattamente in questo formato: "
                        f"`VERDICT: APPROVED` oppure `VERDICT: NEEDS WORK`.")
-        res = run_on_provider(agent, evaluator, eval_prompt, project, cfg, dry_run)
+        res = run_on_provider(agent, evaluator, eval_prompt, project, cfg, dry_run, cwd=cwd)
         if not res.get("ok") and not dry_run:                # CLI fallita/limite ≠ verdetto
             if res.get("rate_limited"):
                 breaker[evaluator] = True
@@ -822,7 +874,7 @@ def evaluator_loop(agent, unit, author_provider, project, cfg, dry_run, breaker,
         opt_prompt = (f"[mentis optimizer] Un valutatore indipendente (modello diverso) ha rivisto "
                       f"{artifact} e ha sollevato:\n{critique}\nRivedi l'artefatto per risolvere "
                       f"tutti i punti, senza introdurre regressioni.")
-        ores = run_on_provider(agent, author_provider, opt_prompt, project, cfg, dry_run)
+        ores = run_on_provider(agent, author_provider, opt_prompt, project, cfg, dry_run, cwd=cwd)
         if not ores.get("ok") and not dry_run:
             if ores.get("rate_limited"):
                 breaker[author_provider] = True
@@ -832,18 +884,18 @@ def evaluator_loop(agent, unit, author_provider, project, cfg, dry_run, breaker,
     return {"status": "approved"}
 
 
-def apply_quality(agent, unit, author_provider, project, cfg, level, dry_run, breaker, state):
+def apply_quality(agent, unit, author_provider, project, cfg, level, dry_run, breaker, state, cwd=None):
     if level in ("reflect", "full"):
-        reflection_pass(agent, unit, author_provider, project, cfg, dry_run, breaker, state)
+        reflection_pass(agent, unit, author_provider, project, cfg, dry_run, breaker, state, cwd)
     if level in ("evaluate", "full"):
-        return evaluator_loop(agent, unit, author_provider, project, cfg, dry_run, breaker, state)
+        return evaluator_loop(agent, unit, author_provider, project, cfg, dry_run, breaker, state, cwd)
     return {"status": "approved"}
 
 
 def reviewer_loop(reviewer_agent, unit, implementer, project, cfg, dry_run, breaker, state,
-                  user_input=""):
-    """Lo step reviewer come evaluator-optimizer: review → se NEEDS WORK ri-dispaccia il
-    developer sull'implementer → re-review, fino a cap, poi escalation."""
+                  user_input="", rework_agent="developer"):
+    """Lo step reviewer come evaluator-optimizer: review → se NEEDS WORK ri-dispaccia
+    l'agente che ha implementato (developer o devops-engineer) → re-review, fino a cap."""
     cap = cfg.get("quality", {}).get("loop_cap", 2)
     all_cand = available_providers(cfg) or list(cfg["preference"])
     indep = ordered_candidates([p for p in all_cand if p != implementer and not breaker.get(p)],
@@ -852,7 +904,7 @@ def reviewer_loop(reviewer_agent, unit, implementer, project, cfg, dry_run, brea
         print(f"    ⚠ REVIEWER: nessun provider indipendente (implementer={implementer}) → escalation")
         return {"status": "escalated", "reason": "no-independent-provider", "provider": None}
     rp = indep[0]                                  # reviewer = indipendente più scarico
-    dev_agent = load_agent("developer")
+    dev_agent = load_agent(rework_agent)           # rework all'agente giusto (fix-CI dispatch)
     issue_txt = f"Issue: {unit.issue['id']} — {unit.issue['title']}\n" if unit.issue else ""
     arg_txt = f"Da revisionare: {user_input}\n" if user_input else ""   # PR/branch passato dall'utente
 
@@ -881,7 +933,7 @@ def reviewer_loop(reviewer_agent, unit, implementer, project, cfg, dry_run, brea
         if breaker.get(implementer):
             print(f"    ⚠ implementer {implementer} non disponibile per il rework → escalation")
             return {"status": "escalated", "reason": "implementer-unavailable", "provider": rp}
-        print(f"    ✎ rework @ {implementer} (developer): giro {rnd + 1}/{cap}")
+        print(f"    ✎ rework @ {implementer} ({rework_agent}): giro {rnd + 1}/{cap}")
         fix_input = (f"{issue_txt}Un reviewer indipendente ha chiesto modifiche:\n{critique}\n"
                      f"Applica le correzioni al codice, senza introdurre regressioni.")
         dev_prompt = compose_prompt(dev_agent, fix_input, project, unit.id, resuming=True,
@@ -1038,9 +1090,10 @@ def cmd_status(project, cfg):
 # --------------------------------------------------------------------------- #
 #  Esecuzione di una unità (estratta per supportare le wave parallele)
 # --------------------------------------------------------------------------- #
-def process_unit(ctx, unit, force_provider=None):
+def process_unit(ctx, unit, force_provider=None, workdir=None):
     project, cfg, state = ctx["project"], ctx["cfg"], ctx["state"]
     breaker, budget, dry_run = ctx["breaker"], ctx["budget"], ctx["dry_run"]
+    run_cwd = workdir or project           # worktree isolato per le unità parallele, altrimenti il progetto
     agent = load_agent(unit.step)
     unit_input = ctx["user_input"]
     if unit.issue:
@@ -1071,22 +1124,24 @@ def process_unit(ctx, unit, force_provider=None):
     if resuming:
         print("    ↻ unità interrotta in un run precedente — riprendo dalla nota di handoff")
 
-    # implementer per l'anti-bias del reviewer (per-issue dallo stato)
+    # implementer per l'anti-bias del reviewer (per-issue dallo stato, qualunque agente)
     implementer = None
+    rework_agent = "developer"
     if unit.step == "reviewer":
-        if unit.issue:
-            dev = state["units"].get(f"developer::{unit.issue['id']}")
-            implementer = dev.get("provider") if dev else None
+        iu = implementer_unit_of_issue(state, unit.issue["id"]) if unit.issue else None
+        if iu:
+            implementer = iu.get("provider")
+            rework_agent = iu.get("step", "developer")   # rework all'agente che ha implementato
         implementer = implementer or last_implementer_from_state(state)
 
-    pre_head = git_head(project) if not dry_run else None
+    pre_head = git_head(run_cwd) if not dry_run else None
     started_at = time.time()
     mark_unit(project, state, unit.id, status="running", step=unit.step, input_hash=h)
 
     # --- REVIEWER: loop review→rework (evaluator-optimizer) ---
     if unit.step == "reviewer":
         rev = reviewer_loop(agent, unit, implementer, project, cfg, dry_run, breaker, state,
-                            user_input=ctx["user_input"])
+                            user_input=ctx["user_input"], rework_agent=rework_agent)
         status = "escalated" if rev["status"] == "escalated" else ("planned" if dry_run else "done")
         mark_unit(project, state, unit.id, status=status, provider=rev.get("provider"),
                   quality_status=rev["status"])
@@ -1096,7 +1151,7 @@ def process_unit(ctx, unit, force_provider=None):
 
     # --- step normale: implementazione + quality ---
     res = run_unit_with_fallback(agent, unit, unit_input, project, cfg, implementer,
-                                 dry_run, resuming, breaker, budget, state, force_provider)
+                                 dry_run, resuming, breaker, budget, state, force_provider, workdir)
     if res.get("ok"):
         charge(state, res.get("provider"), role_weight_kind(unit.step), cfg, project)
 
@@ -1124,14 +1179,14 @@ def process_unit(ctx, unit, force_provider=None):
     level = quality_level(unit.step, cfg, ctx["quality_override"])
     if res.get("ok") and level != "off":
         print(f"    ◇ quality: {level}")
-        qres = apply_quality(agent, unit, author, project, cfg, level, dry_run, breaker, state)
+        qres = apply_quality(agent, unit, author, project, cfg, level, dry_run, breaker, state, run_cwd)
         mark_unit(project, state, unit.id, quality=level, quality_status=qres["status"])
         if qres.get("status") == "escalated":
             print(f"    ⛔ ESCALATION ({qres.get('reason')}) su '{unit.id}' — mi fermo e scalo a te.")
             mark_unit(project, state, unit.id, status="escalated")
             return {"status": "escalated", "provider": author}
 
-    produced = produced_output(project, unit, dry_run, pre_head, started_at)
+    produced = produced_output(run_cwd, unit, dry_run, pre_head, started_at)
     if dry_run:
         mark_unit(project, state, unit.id, status="planned", provider=author)
         return {"status": "planned", "provider": author}
@@ -1237,8 +1292,8 @@ def main():
 
     parallel = args.parallel and not dry_run and len(available_providers(cfg)) >= 2
     if args.parallel and not dry_run:
-        print("   ⚠ --parallel: le unità concorrenti CONDIVIDONO la working dir; l'isolamento")
-        print("     git (worktree per-unità) è ancora TODO — usalo con cautela su agenti che committano.\n")
+        print("   ⧉ --parallel: le unità implementanti girano in git worktree ISOLATI "
+              "(branch mentis/{unit}); niente collisione su .git/index.lock.\n")
 
     stop = False
     for step in steps:                              # LAZY: espando lo step ADESSO
@@ -1254,8 +1309,18 @@ def main():
                 print(f"⛓ wave {'parallela' if parallel else '(sequenziale)'}: {[u.id for u in wave]}")
             if parallel and len(wave) > 1:
                 ordered = ordered_candidates(available_providers(cfg), cfg, state)
+
+                def _run_isolated(u, prov):
+                    wt = make_worktree(project, u.id) if u.step in IMPLEMENTING_STEPS else None
+                    if wt:
+                        print(f"    ⧉ {u.id}: worktree isolato ({wt.name}) — niente collisione git")
+                    try:
+                        return process_unit(ctx, u, prov, workdir=wt)
+                    finally:
+                        remove_worktree(project, wt)      # il branch resta; il worktree no
+
                 with ThreadPoolExecutor(max_workers=len(wave)) as ex:
-                    futs = {ex.submit(process_unit, ctx, u, ordered[k % len(ordered)]): u
+                    futs = {ex.submit(_run_isolated, u, ordered[k % len(ordered)]): u
                             for k, u in enumerate(wave)}
                     results = {futs[f].id: f.result() for f in futs}
             else:

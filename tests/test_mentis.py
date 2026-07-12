@@ -8,7 +8,7 @@ Esegui:   python3 -m unittest discover -s tests
 Copre la logica pura (parser, routing, balancer, contratti) e un test di
 integrazione del flusso HITL. NON esegue provider reali.
 """
-import sys, os, json, time, tempfile, shutil, unittest
+import sys, os, json, time, tempfile, shutil, subprocess, unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "orchestrator"))
@@ -162,7 +162,7 @@ class TestHITLIntegration(unittest.TestCase):
                "quality_override": "off"}
         box = {"out": ""}
         orig = mentis.run_on_provider
-        mentis.run_on_provider = lambda a, p, prompt, pr, c, d: {
+        mentis.run_on_provider = lambda a, p, prompt, pr, c, d, cwd=None: {
             "ok": True, "output": box["out"], "provider": p, "_prompt": prompt}
         try:
             u = mentis.Unit("business-analyst", "business-analyst")
@@ -183,6 +183,55 @@ class TestHITLIntegration(unittest.TestCase):
         finally:
             mentis.run_on_provider = orig
             shutil.rmtree(proj)
+
+
+class TestLabelRouting(unittest.TestCase):
+    """DevOps label → devops-engineer (rende l'agente raggiungibile)."""
+
+    def test_expand_step_routes_by_label(self):
+        d = Path(tempfile.mkdtemp()); (d / "implementation-plans").mkdir()
+        (d / "implementation-plans" / "X_DEPS.json").write_text(json.dumps({"issues": [
+            {"id": "A", "title": "api", "label": "Backend", "deps": []},
+            {"id": "B", "title": "ci", "label": "DevOps", "deps": []}]}))
+        by = {u.issue["id"]: u.step for u in mentis.expand_step("developer", d)}
+        shutil.rmtree(d)
+        self.assertEqual(by["A"], "developer")
+        self.assertEqual(by["B"], "devops-engineer")
+
+    def test_agent_for_label(self):
+        self.assertEqual(mentis.agent_for_label("DevOps"), "devops-engineer")
+        self.assertEqual(mentis.agent_for_label("Frontend"), "developer")
+        self.assertEqual(mentis.agent_for_label(None), "developer")
+
+
+class TestWorktree(unittest.TestCase):
+    """Isolamento git worktree per --parallel (git reale)."""
+
+    def _git_repo(self):
+        d = Path(tempfile.mkdtemp())
+        subprocess.run(["git", "-C", str(d), "init", "-q"])
+        (d / "f").write_text("x")
+        subprocess.run(["git", "-C", str(d), "add", "-A"])
+        subprocess.run(["git", "-C", str(d), "-c", "user.email=x@x", "-c", "user.name=x",
+                        "commit", "-q", "-m", "base"])
+        return d
+
+    def test_make_and_remove_worktree(self):
+        d = self._git_repo()
+        wt = mentis.make_worktree(d, "developer::A")
+        ok = wt is not None and wt.exists() and (wt / ".git").exists()
+        mentis.remove_worktree(d, wt)
+        gone = not wt.exists()
+        br = subprocess.run(["git", "-C", str(d), "branch"], capture_output=True, text=True).stdout
+        shutil.rmtree(d)
+        self.assertTrue(ok)                    # worktree creato e isolato
+        self.assertTrue(gone)                  # rimosso dopo il cleanup
+        self.assertIn("mentis/developer__A", br)  # il branch persiste (deliverable)
+
+    def test_non_git_returns_none(self):
+        d = Path(tempfile.mkdtemp())
+        self.assertIsNone(mentis.make_worktree(d, "x"))
+        shutil.rmtree(d)
 
 
 if __name__ == "__main__":
