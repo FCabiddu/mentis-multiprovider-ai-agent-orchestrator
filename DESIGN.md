@@ -397,11 +397,21 @@ orchestratore e agenti era prosa, non un'interfaccia*. **Bloccanti corretti:**
   TOML, `load_issues` (canonico/legacy/garbage/anti-crash), balancer, verdict,
   result, toposort, waves, no-shell-injection, flusso HITL.
 
-**Tier B — ancora da fare:** i *corpi* degli agenti restano Claude-oriented
-(Linear, `gh`, spawn nel reviewer) dietro il `NEUTRALITY_PREAMBLE` in prosa →
-servono **adapter provider-neutral** per-agente. Inoltre: isolamento **worktree**
-per `--parallel` (le unità concorrenti condividono la working dir), dispatch reale
-del fix-CI del reviewer (oggi devops non è instradato).
+**Tier B — neutralizzazione corpi agente (in corso).** I tre offender principali
+sono stati riscritti direttamente nei corpi (non solo coperti dal preambolo):
+- `reviewer.md` — rimosso lo **spawn** di sotto-agenti (`Agent`/`subagent_type`):
+  ora riporta il fix come `NEEDS WORK` e il `reviewer_loop` ri-dispaccia.
+- `implementation-planner.md` — Step 6 **Linear neutralizzato**: niente MCP, il
+  deliverable è il `*_DEPS.json` canonico + l'IPD locale.
+- `business-analyst.md` — **`AskUserQuestion` rimosso**: le domande bloccanti
+  passano dal contratto `needs_input`, altrimenti default + assunzioni documentate.
+
+**Ancora da fare:** gli altri corpi (`developer`, `qa-engineer`, `devops-engineer`,
+`documentation-agent`, `mvp-builder`, `tech-architect`) contengono ancora menzioni
+sparse di Linear/`gh`/`AskUserQuestion` (perlopiù "optionally") — sono più a basso
+rischio (il `NEUTRALITY_PREAMBLE` le sovrascrive) ma vanno ripulite. Inoltre:
+isolamento **worktree** per `--parallel` (unità concorrenti condividono la working
+dir → collisione git); dispatch reale del fix-CI end-to-end.
 
 ## 14. Cosa resta da fare quando attivi gli abbonamenti
 

@@ -16,14 +16,7 @@ The user has provided: {{ARGUMENTS}}
 Check if `{{ARGUMENTS}}` begins with the word `simple`, `medium`, or `full` (case-insensitive).
 
 - **Yes** → extract it as `PROJECT_SCOPE`, strip it from the arguments, treat the remainder as the actual input.
-- **No** → use `AskUserQuestion` once:
-
-  > "What's the project scope?
-  > - **simple** — static site, landing page, or single small feature
-  > - **medium** — product with a backend, small SaaS, small e-commerce
-  > - **full** — multi-team enterprise product, complex data model, production-grade"
-
-  Wait for the answer. Store it as `PROJECT_SCOPE`. Proceed to Step 1 with the original arguments unchanged.
+- **No** → **inferisci** `PROJECT_SCOPE` dall'input (simple = sito statico/landing/piccola feature; medium = prodotto con backend/piccolo SaaS/e-commerce; full = enterprise multi-team, dati complessi, production-grade). Se davvero non è inferibile e la scelta cambia sostanzialmente il documento, emetti `needs_input` (contratto) chiedendo lo scope; altrimenti assumi **medium** e annota l'assunzione. Prosegui allo Step 1 con gli argomenti originali invariati.
 
 **Output caps:**
 
@@ -41,28 +34,32 @@ Check if `{{ARGUMENTS}}` begins with the word `simple`, `medium`, or `full` (cas
 
 Determine what was provided:
 
-- **Empty**: Ask "What would you like me to analyse?" and wait.
+- **Empty**: nessun input — emetti `needs_input` (contratto) chiedendo cosa analizzare.
 - **File path**: Read it with the Read tool.
 - **Folder path**: Run `find "{path}" -type f` and read the most relevant files.
 - **Free text**: Use it directly.
 
 ---
 
-## Step 2 — Ask all blocking questions upfront
+## Step 2 — Domande bloccanti (via il contratto, NON tool interattivi)
 
-Before writing a single word of the document, use `AskUserQuestion` **once** with all the questions you need answered. Bundle them into a single numbered list. Only ask what you cannot confidently infer from the input.
+Sotto mentis **non** esistono tool interattivi: **non** usare `AskUserQuestion`.
+Se — e solo se — restano lacune **davvero bloccanti** che non puoi inferire
+dall'input, elencale nel blocco finale `[[MENTIS-RESULT]]` con
+`"status":"needs_input"` e le domande in `"questions"`: l'orchestratore metterà in
+pausa e ti ripresenterà le risposte al rilancio. Altrimenti **procedi con default
+ragionevoli** e documenta le assunzioni nel BAD (sezione Assumptions).
 
-Always include at minimum:
+Considera almeno questi punti (metti in `questions` solo quelli davvero bloccanti
+e non inferibili — le domande fermano la pipeline, usale con parsimonia):
 
-1. **Scope** — MVP (ship fast, validate) or Production (complete, scalable)?
-2. **Users** — Who are the primary users? (e.g. end customers, internal staff, admins)
-3. **Integrations** — Any third-party services, APIs, or existing systems to connect to? (e.g. payment, auth, CMS, ERP)
-4. **Auth** — How do users log in? (e.g. email/password, social login, SSO, no login needed)
-5. **Deployment** — Where will this run? (e.g. Vercel, AWS, on-prem, unknown yet)
-6. **Brand / assets** — Are design assets available (logo, colours, fonts), or will the designer start from scratch?
-7. **Known constraints** — Any hard technical, budget, or timeline constraints the architect must respect?
-
-Skip any question whose answer is already clear from the input. Do not ask more than 8 questions total. Wait for the user's answers before proceeding.
+1. **Scope** — MVP o Production? (default: MVP se non indicato)
+2. **Users** — chi sono gli utenti primari?
+3. **Integrations** — servizi/API di terzi o sistemi esistenti da collegare?
+4. **Auth** — come fanno login gli utenti?
+5. **Deployment** — dove gira?
+6. **Brand / assets** — asset di design disponibili, o si parte da zero?
+7. **Known constraints** — vincoli tecnici, di budget o timeline da rispettare?
 
 ---
 

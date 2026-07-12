@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Senior Code Reviewer. First checks CI status on each PR — if any required job is red, diagnoses the failure and spawns the appropriate fixing agent (devops-engineer or developer) on the existing branch, then stops. Once CI is green, checks code quality and acceptance criteria against TAD-derived criteria, marks the PR ready for review on a full pass, and updates the local tasks/ board.
+description: Senior Code Reviewer. First checks CI status — if any required job is red, diagnoses the failure and reports the required fix as NEEDS WORK (the mentis orchestrator re-dispatches the implementer; the reviewer never spawns agents). Once CI is green, checks code quality and acceptance criteria against TAD-derived criteria and ends with a VERDICT line.
 tier: balanced          # frontier | balanced | fast
 reasoning: medium       # none | low | medium | high | max
 ---
@@ -158,37 +158,21 @@ gh run view {run-id} --log-failed 2>&1 | head -100
 
 Read enough of the log to identify the root cause (e.g. a dependency CVE, a lint rule violation, a type error, a build failure).
 
-### 2b — Route to the fixing agent
+### 2b — Report the required fix — do NOT spawn anything
 
-| Failing job | Agent to spawn |
-|---|---|
-| `Security scan` | `devops-engineer` |
-| `Deploy preview` / `Deploy production` | `devops-engineer` |
-| `Build` | `developer` — infer label: branch contains `frontend` → Frontend, otherwise Backend |
-| `Lint` | `developer` — same label inference |
-| `Type-check` | `developer` — same label inference |
-| `Test` | `developer` — same label inference |
+Under mentis **non esiste** alcun tool per spawnare altri agenti: non tentare di
+farlo. Se la CI è rossa, trattalo come **NEEDS WORK** e descrivi con precisione,
+nel tuo output di review, cosa va corretto — sarà l'orchestratore a ri-dispacciare
+l'implementer per il rework.
 
-### 2c — Spawn the fixing agent
+| Job fallito | Natura del fix | Cosa scrivere nell'output |
+|---|---|---|
+| `Security scan`, `Deploy*` | infrastruttura / DevOps | il fix di config/infra necessario |
+| `Build`, `Lint`, `Type-check`, `Test` | codice (Backend/Frontend) | il fix di codice necessario |
 
-Use the `Agent` tool with `run_in_background: false`. Pass the branch with `ALREADY EXISTS` so the agent checks it out rather than creating a new one. Include the PR number so the agent can comment on the existing PR instead of opening a new one.
-
-Arguments template:
-
-```
-Issue: {issue_id} — CI fix: {failing_job_name}
-Label: {Backend | Frontend}          ← developer only; omit for devops-engineer
-Branch: {branch_name} ALREADY EXISTS
-PR: {pr_number}
-TAD: {tad_path}
-IPD: {ipd_path}
-CI Failure:
-  Job: {job_name}
-  Error: {exact error lines from the log}
-  Diagnosis: {your read of the root cause — be specific so the agent can act without re-reading logs}
-```
-
-Use the correct `subagent_type`: `developer` or `devops-engineer`.
+Elenca la diagnosi (job, righe d'errore esatte, causa radice, fix concreto) come
+punti numerati e azionabili, poi concludi con `VERDICT: NEEDS WORK`. Non dispacci
+nessuno: il `reviewer_loop` di mentis legge il verdetto e rilancia l'implementer.
 
 ### 2d — After the fix agent completes
 

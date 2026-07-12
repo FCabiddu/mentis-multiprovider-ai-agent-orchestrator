@@ -380,9 +380,14 @@ After all fixes, do a final Write with:
 
 ---
 
-## Step 6 — Linear integration (conditional)
+## Step 6 — Issue tracking (mentis: LOCALE, niente Linear)
 
-If the user answered **yes** to "Push to Linear?" in Step 0, proceed with this step. Otherwise skip to Step 7.
+Sotto mentis il tracking è **locale e provider-neutral**: **NON** usare tool
+Linear/MCP e **NON** chiedere team/progetti. **Salta interamente** i sotto-passi
+6a–6d e la sezione `LINEAR_API_TOKEN`/blocking-relations qui sotto (sono legacy
+pocket-it, N/A qui). L'unico output di questo step è il **`*_DEPS.json` canonico**
+descritto più sotto in *"Write the deps JSON file"*: vai direttamente a quella
+parte, scrivilo, poi passa allo Step 7.
 
 ### 6a — Connect to Linear
 
