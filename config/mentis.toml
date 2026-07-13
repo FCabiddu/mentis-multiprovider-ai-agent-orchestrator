@@ -11,7 +11,7 @@
 
 # Ordine di preferenza. In modalità "fallback" si prova dall'alto verso il
 # basso finché uno risponde senza rate-limit/errore.
-preference = ["claude", "codex"]
+preference = ["claude", "codex", "gemini"]
 
 # Modalità di default dell'orchestratore:
 #   fallback  → prova un provider, al primo errore passa al successivo
@@ -56,6 +56,13 @@ auth    = "subscription"              # account ChatGPT — non API key
 cmd     = "codex exec {prompt} --model {model} --reasoning {reasoning}"
 list_models_cmd = ""                  # es. "codex --list-models" — VERIFICA con `codex --help`
 
+[providers.gemini]
+enabled = false                       # metti true dopo il login Google (Gemini CLI, tier gratuito)
+auth    = "subscription"              # account Google — non API key
+cmd     = "gemini -p {prompt} -m {model}"   # ⚠️ VERIFICA i flag con `gemini --help` (niente {reasoning}:
+                                            #   passato come hint nel prompt dall'orchestratore)
+list_models_cmd = ""                  # es. "gemini --list-models" — VERIFICA
+
 # ----------------------------------------------------------------------------
 #  TIER_KEYWORDS — parola che lega un tier al nome del modello, per il `doctor`.
 #  Quando esce una nuova famiglia (es. gpt-5.7-*), doctor cerca tra i modelli
@@ -72,6 +79,11 @@ frontier = "sol"
 balanced = "terra"
 fast     = "luna"
 
+[tier_keywords.gemini]
+frontier = "pro"
+balanced = "flash"
+fast     = "lite"
+
 # ----------------------------------------------------------------------------
 #  MAPPA TIER → MODELLO  (asse 1: quale modello)
 #  L'agente dichiara tier = frontier|balanced|fast; qui diventa il modello
@@ -87,6 +99,11 @@ fast     = "haiku-4-5"
 frontier = "gpt-5.6-sol"
 balanced = "gpt-5.6-terra"
 fast     = "gpt-5.6-luna"
+
+[model_map.gemini]                    # ⚠️ nomi STIMATI — verifica/aggiorna con `mentis doctor`
+frontier = "gemini-2.5-pro"
+balanced = "gemini-2.5-flash"
+fast     = "gemini-2.5-flash-lite"
 
 # ----------------------------------------------------------------------------
 #  MAPPA REASONING → EFFORT  (asse 2: quanto ragiona — ortogonale al tier)
@@ -110,6 +127,15 @@ low    = "low"
 medium = "medium"
 high   = "high"
 max    = "ultra"
+
+# Gemini: nessun flag reasoning nella cmd → l'orchestratore inietta l'hint nel prompt.
+# La mappa serve comunque per il clamping; i valori sono etichette.
+[reasoning_map.gemini]
+none   = "none"
+low    = "low"
+medium = "medium"
+high   = "high"
+max    = "high"
 
 # ----------------------------------------------------------------------------
 #  POLICY DI REVIEW — anti-bias cross-provider
@@ -184,6 +210,7 @@ evaluate  = 0.3               # critica breve (verdetto + problemi)
 default = 5
 claude  = 5
 codex   = 5
+gemini  = 5
 
 # ----------------------------------------------------------------------------
 #  QUALITY — Reflection + Evaluator-Optimizer (vedi DESIGN §9)

@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+#
+# orko — wrapper CLI per mentis.
+#
+# Installazione (una volta):
+#   ln -s "$(pwd)/bin/orko" /usr/local/bin/orko      # oppure aggiungi bin/ al PATH
+#
+# Uso:  orko build "app TODO" --project ~/dev/todo
+#       orko status --project ~/dev/todo
+#       orko doctor --provider codex --models "..."
+#
+set -euo pipefail
+
+# Risoluzione portabile del path reale (segue i symlink; funziona anche su macOS,
+# dove `readlink -f` non esiste).
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+ROOT="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+
+exec python3 "$ROOT/orchestrator/mentis.py" "$@"

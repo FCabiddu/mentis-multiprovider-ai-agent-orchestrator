@@ -53,6 +53,9 @@ IMPLEMENTING_STEPS = {"developer", "devops-engineer", "qa-engineer", "mvp-builde
 # gradino esatto.
 REASONING_LADDER = ["none", "low", "medium", "high", "max"]
 
+# Tetto di sicurezza al numero di unità generabili da un *_DEPS.json (output LLM).
+MAX_ISSUES = 200
+
 # Pattern che indicano esaurimento/limite → trigger di fallback.
 RATE_LIMIT_PATTERNS = re.compile(
     r"rate.?limit|quota|usage limit|too many requests|\b429\b|overloaded|"
@@ -95,13 +98,14 @@ def load_toml(path: Path) -> dict:
 
 
 def _strip_comment(line: str) -> str:
-    """Rimuove un commento '#' che non sia dentro una stringa."""
-    out, in_str = [], False
+    """Rimuove un commento '#' che non sia dentro una stringa (gestisce le `\\"` escaped)."""
+    out, in_str, esc = [], False, False
     for ch in line:
-        if ch == '"':
+        if ch == '"' and not esc:
             in_str = not in_str
         if ch == "#" and not in_str:
             break
+        esc = (ch == "\\" and not esc)
         out.append(ch)
     return "".join(out)
 
@@ -295,7 +299,9 @@ def load_state(project: Path) -> dict:
 def save_state(project: Path, state: dict):
     p = state_path(project)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(state, indent=2))
+    tmp = p.with_name(p.name + ".tmp")          # write ATOMICA: temp + replace
+    tmp.write_text(json.dumps(state, indent=2))
+    os.replace(str(tmp), str(p))                # un crash a metà non corrompe state.json
 
 
 def mark_unit(project: Path, state: dict, uid: str, **fields):
@@ -310,10 +316,18 @@ def mark_unit(project: Path, state: dict, uid: str, **fields):
 def log_call(project: Path, entry: dict, prompt: str = "", output: str = ""):
     """Registra una chiamata a un provider: indice JSONL + transcript completo su file."""
     global _CALL_SEQ
+    d = project / ".mentis" / "logs"
     with _STATE_LOCK:
+        if _CALL_SEQ == 0:                        # seed dal log esistente: niente transcript
+            f = d / "calls.jsonl"                 # sovrascritti quando si RIPRENDE un run
+            if f.exists():
+                try:
+                    _CALL_SEQ = max((json.loads(l).get("seq", 0)
+                                     for l in f.read_text().splitlines() if l.strip()), default=0)
+                except Exception:
+                    pass
         _CALL_SEQ += 1
         seq = _CALL_SEQ
-    d = project / ".mentis" / "logs"
     (d / "transcripts").mkdir(parents=True, exist_ok=True)
     entry = {"seq": seq, **entry}
     with open(d / "calls.jsonl", "a") as f:
@@ -510,15 +524,24 @@ def load_issues(project: Path):
                        "label": it.get("label", "Backend"),
                        "deps": [str(d) for d in it.get("deps", it.get("dependencies", []))]}
         order.append(iid)
+    if len(order) > MAX_ISSUES:                    # tetto: un DEPS anomalo (LLM) non genera un runaway
+        print(f"    ⚠ DEPS: {len(order)} issue oltre il tetto di {MAX_ISSUES} — troncate "
+              f"(probabile output anomalo). Alza MAX_ISSUES se è legittimo.")
+        keep = set(order[:MAX_ISSUES])
+        issues = {k: v for k, v in issues.items() if k in keep}
+        order = order[:MAX_ISSUES]
     return _toposort(issues, order) if issues else None
 
 
 def _toposort(issues: dict, order: list):
-    result, visiting, done = [], set(), set()
+    result, visiting, done, cycles = [], set(), set(), []
 
     def visit(iid):
-        if iid in done or iid not in issues or iid in visiting:
-            return                                   # ciclo/ignoto → salta l'arco
+        if iid in done or iid not in issues:
+            return
+        if iid in visiting:                          # arco che chiude un ciclo → ignorato
+            cycles.append(iid)
+            return
         visiting.add(iid)
         for d in issues[iid]["deps"]:
             visit(d)
@@ -526,6 +549,9 @@ def _toposort(issues: dict, order: list):
 
     for iid in order:
         visit(iid)
+    if cycles:
+        print(f"    ⚠ dipendenze cicliche nel DEPS (archi ignorati, ordine potenzialmente "
+              f"non ottimale): {sorted(set(cycles))}")
     return result
 
 

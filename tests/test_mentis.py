@@ -234,5 +234,38 @@ class TestWorktree(unittest.TestCase):
         shutil.rmtree(d)
 
 
+class TestRobustness(unittest.TestCase):
+    def test_atomic_save_state(self):
+        d = Path(tempfile.mkdtemp())
+        mentis.save_state(d, {"units": {"a": {"status": "done"}}})
+        reloaded = mentis.load_state(d)
+        tmp_gone = not (d / ".mentis" / "state.json.tmp").exists()
+        shutil.rmtree(d)
+        self.assertEqual(reloaded["units"]["a"]["status"], "done")
+        self.assertTrue(tmp_gone)                   # nessun file .tmp lasciato indietro
+
+    def test_deps_cap(self):
+        d = Path(tempfile.mkdtemp()); (d / "implementation-plans").mkdir()
+        (d / "implementation-plans" / "X_DEPS.json").write_text(json.dumps(
+            {"issues": [{"id": f"I{i}", "title": "t", "deps": []} for i in range(10)]}))
+        old = mentis.MAX_ISSUES
+        mentis.MAX_ISSUES = 3
+        try:
+            iss = mentis.load_issues(d)
+        finally:
+            mentis.MAX_ISSUES = old
+        shutil.rmtree(d)
+        self.assertEqual(len(iss), 3)               # troncate al tetto
+
+    def test_strip_comment_handles_escaped_quote(self):
+        line = 'k = "a \\" b # non è un commento"'
+        self.assertIn("non è un commento", mentis._strip_comment(line))
+
+    def test_gemini_third_provider_configured(self):
+        cfg = _cfg()
+        self.assertIn("gemini", cfg["preference"])
+        self.assertEqual(cfg["model_map"]["gemini"]["frontier"], "gemini-2.5-pro")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
