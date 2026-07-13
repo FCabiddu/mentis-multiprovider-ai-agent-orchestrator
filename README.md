@@ -74,12 +74,12 @@ Perché **a subscription e non ad API**: gli abbonamenti consumer (ChatGPT Plus,
 python3 orchestrator/mentis.py <comando> "<descrizione>" [flag]
 ```
 
-Oppure installa il wrapper **`orko`** e usalo come comando:
+Oppure installa il wrapper **`mentis`** e usalo come comando:
 
 ```bash
-ln -s "$(pwd)/bin/orko" /usr/local/bin/orko   # una volta (o aggiungi bin/ al PATH)
-orko build "app TODO" --project ~/dev/todo
-orko status --project ~/dev/todo
+ln -s "$(pwd)/bin/mentis" /usr/local/bin/mentis   # una volta (o aggiungi bin/ al PATH)
+mentis build "app TODO" --project ~/dev/todo
+mentis status --project ~/dev/todo
 ```
 
 | Comando | Cosa fa |
@@ -158,16 +158,16 @@ mentis/
 ├── orchestrator/
 │   └── mentis.py      # il regista — stdlib pura, zero dipendenze (Python ≥ 3.7)
 ├── bin/
-│   └── orko           # wrapper CLI (orko build ... invece di python3 orchestrator/mentis.py)
+│   └── mentis         # wrapper CLI (mentis build ... invece di python3 orchestrator/mentis.py)
 ├── tests/
-│   └── test_mentis.py # suite stdlib unittest (28 test) — python3 -m unittest discover -s tests
+│   └── test_mentis.py # suite stdlib unittest — python3 -m unittest discover -s tests
 ├── README.md          # questo file
 └── DESIGN.md          # architettura, decisioni e razionale in dettaglio
 ```
 
-**Provider supportati (config-driven):** Claude (Claude Code CLI), GPT-5.6 (Codex CLI),
-Gemini (Gemini CLI, tier gratuito Google). Tutti `enabled = false` finché non fai il login;
-aggiungere un provider = una sezione + una colonna nelle mappe.
+**Provider (config-driven):** Claude (Claude Code CLI) e GPT-5.6 (Codex CLI), entrambi
+`enabled = false` finché non fai il login. Aggiungerne un altro = una sezione `[providers.X]`
++ una colonna nelle mappe di `mentis.toml`.
 
 Zero dipendenze: `mentis.py` usa solo la standard library (incluso un mini-parser TOML). Nessun `pip install`.
 

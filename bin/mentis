@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# orko — wrapper CLI per mentis.
+# mentis — wrapper CLI.
 #
 # Installazione (una volta):
-#   ln -s "$(pwd)/bin/orko" /usr/local/bin/orko      # oppure aggiungi bin/ al PATH
+#   ln -s "$(pwd)/bin/mentis" /usr/local/bin/mentis   # oppure aggiungi bin/ al PATH
 #
-# Uso:  orko build "app TODO" --project ~/dev/todo
-#       orko status --project ~/dev/todo
-#       orko doctor --provider codex --models "..."
+# Uso:  mentis build "app TODO" --project ~/dev/todo
+#       mentis status --project ~/dev/todo
+#       mentis doctor --provider codex --models "..."
 #
 set -euo pipefail
 

@@ -261,11 +261,6 @@ class TestRobustness(unittest.TestCase):
         line = 'k = "a \\" b # non è un commento"'
         self.assertIn("non è un commento", mentis._strip_comment(line))
 
-    def test_gemini_third_provider_configured(self):
-        cfg = _cfg()
-        self.assertIn("gemini", cfg["preference"])
-        self.assertEqual(cfg["model_map"]["gemini"]["frontier"], "gemini-2.5-pro")
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

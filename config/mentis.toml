@@ -11,7 +11,7 @@
 
 # Ordine di preferenza. In modalità "fallback" si prova dall'alto verso il
 # basso finché uno risponde senza rate-limit/errore.
-preference = ["claude", "codex", "gemini"]
+preference = ["claude", "codex"]
 
 # Modalità di default dell'orchestratore:
 #   fallback  → prova un provider, al primo errore passa al successivo
@@ -56,13 +56,6 @@ auth    = "subscription"              # account ChatGPT — non API key
 cmd     = "codex exec {prompt} --model {model} --reasoning {reasoning}"
 list_models_cmd = ""                  # es. "codex --list-models" — VERIFICA con `codex --help`
 
-[providers.gemini]
-enabled = false                       # metti true dopo il login Google (Gemini CLI, tier gratuito)
-auth    = "subscription"              # account Google — non API key
-cmd     = "gemini -p {prompt} -m {model}"   # ⚠️ VERIFICA i flag con `gemini --help` (niente {reasoning}:
-                                            #   passato come hint nel prompt dall'orchestratore)
-list_models_cmd = ""                  # es. "gemini --list-models" — VERIFICA
-
 # ----------------------------------------------------------------------------
 #  TIER_KEYWORDS — parola che lega un tier al nome del modello, per il `doctor`.
 #  Quando esce una nuova famiglia (es. gpt-5.7-*), doctor cerca tra i modelli
@@ -79,11 +72,6 @@ frontier = "sol"
 balanced = "terra"
 fast     = "luna"
 
-[tier_keywords.gemini]
-frontier = "pro"
-balanced = "flash"
-fast     = "lite"
-
 # ----------------------------------------------------------------------------
 #  MAPPA TIER → MODELLO  (asse 1: quale modello)
 #  L'agente dichiara tier = frontier|balanced|fast; qui diventa il modello
@@ -99,11 +87,6 @@ fast     = "haiku-4-5"
 frontier = "gpt-5.6-sol"
 balanced = "gpt-5.6-terra"
 fast     = "gpt-5.6-luna"
-
-[model_map.gemini]                    # ⚠️ nomi STIMATI — verifica/aggiorna con `mentis doctor`
-frontier = "gemini-2.5-pro"
-balanced = "gemini-2.5-flash"
-fast     = "gemini-2.5-flash-lite"
 
 # ----------------------------------------------------------------------------
 #  MAPPA REASONING → EFFORT  (asse 2: quanto ragiona — ortogonale al tier)
@@ -128,19 +111,10 @@ medium = "medium"
 high   = "high"
 max    = "ultra"
 
-# Gemini: nessun flag reasoning nella cmd → l'orchestratore inietta l'hint nel prompt.
-# La mappa serve comunque per il clamping; i valori sono etichette.
-[reasoning_map.gemini]
-none   = "none"
-low    = "low"
-medium = "medium"
-high   = "high"
-max    = "high"
-
 # ----------------------------------------------------------------------------
 #  POLICY DI REVIEW — anti-bias cross-provider
 #  Il reviewer NON deve mai girare sullo stesso provider che ha implementato.
-#  L'orchestratore legge chi ha implementato (da .mentis/ledger.json nel
+#  L'orchestratore legge chi ha implementato (da .mentis/state.json nel
 #  progetto) e sceglie per il reviewer un provider DIVERSO.
 # ----------------------------------------------------------------------------
 
@@ -160,7 +134,7 @@ on_no_alternative = "warn"            # se esiste un solo provider attivo:
 #  `mode` (fallback) salvo la review, governata da [review].
 # ----------------------------------------------------------------------------
 
-[pipeline.build]                      #  orko "build ..."  → pipeline completa
+[pipeline.build]                      #  mentis "build ..."  → pipeline completa
 steps = [
   "business-analyst",
   "tech-architect",
@@ -171,16 +145,16 @@ steps = [
   "documentation-agent",
 ]
 
-[pipeline.tad]                        #  orko "tad ..."  → solo architettura
+[pipeline.tad]                        #  mentis "tad ..."  → solo architettura
 steps = ["tech-architect"]
 
-[pipeline.bad]                        #  orko "bad ..."  → solo analisi
+[pipeline.bad]                        #  mentis "bad ..."  → solo analisi
 steps = ["business-analyst"]
 
-[pipeline.review]                     #  orko "review ..." → solo review (cross-provider)
+[pipeline.review]                     #  mentis "review ..." → solo review (cross-provider)
 steps = ["reviewer"]
 
-[pipeline.mvp]                        #  orko "mvp ..."  → sito statico
+[pipeline.mvp]                        #  mentis "mvp ..."  → sito statico
 steps = ["mvp-builder"]
 
 # ----------------------------------------------------------------------------
@@ -210,7 +184,6 @@ evaluate  = 0.3               # critica breve (verdetto + problemi)
 default = 5
 claude  = 5
 codex   = 5
-gemini  = 5
 
 # ----------------------------------------------------------------------------
 #  QUALITY — Reflection + Evaluator-Optimizer (vedi DESIGN §9)
