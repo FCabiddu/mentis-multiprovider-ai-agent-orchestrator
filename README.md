@@ -148,6 +148,48 @@ python3 orchestrator/mentis.py doctor --provider codex \
 
 ---
 
+## Design pattern — cosa, come, perché
+
+mentis non inventa un'architettura da zero: **compone pattern agentici ormai standard** (Anthropic "Building effective agents", la letteratura orchestrator-worker del 2026) su una spina dorsale semplice, più **un pattern originale** — la review anti-bias cross-provider — che è la ragione d'essere del progetto. Ogni scelta ha un costo: sotto, il *perché* accanto al *come*. Il razionale esteso è in **[DESIGN.md](DESIGN.md)**.
+
+### La spina dorsale
+
+| Pattern | Come lo usa mentis | Perché |
+|---|---|---|
+| **Orchestrator-Worker** | Il regista (`mentis.py`) sta *sopra* le CLI: nessun cervello LLM, nessun tool proprio. Sceglie quale CLI esegue quale passo. Lo spawn di sotto-agenti — che in Claude Code era *dentro* l'agente — qui **sale nell'orchestratore** (il `for` sugli step). | Un regista deterministico rende il flusso ispezionabile e riproducibile; la parte "intelligente" resta isolata nelle CLI, sostituibili. (§2) |
+| **Sequential Pipeline / Prompt Chaining** | BAD → TAD → IPD → developer → qa → reviewer → docs. Ogni passo consuma l'artefatto del precedente. | Task complesso spezzato in sottotask verificabili uno alla volta; ogni handoff è un punto di controllo. |
+| **Externalized state (handoff su disco)** | Il passaggio tra agenti è **file su disco** (`business-analysis/`, `tech-analysis/`, …), non stato in memoria. Ogni agente scrive anche una **nota di handoff** (`fatto / da fare / decisioni`). | Un `.md` è **neutro**: non importa quale modello l'ha scritto. È *questo* che rende la pipeline portabile tra provider — il contesto durevole vive sul disco condiviso, non nella sessione della CLI. (§10) |
+| **Config-driven Strategy (tier + reasoning)** | L'agente dichiara `tier` (quale modello) e `reasoning` (quanto ragiona), due assi ortogonali; le tabelle in `mentis.toml` li traducono nel modello reale del provider corrente, con **clamping** al gradino più vicino se manca. | Aggiungere un provider = una sezione + una colonna, **zero modifiche agli agenti**. Il costo di manutenzione dei nomi-modello è ridotto a una tabella (`doctor` la aggiorna). (§3–4, §8) |
+
+### I pattern di affidabilità
+
+| Pattern | Come lo usa mentis | Perché |
+|---|---|---|
+| **Layered Fallback** | Su rate-limit (rc≠0 **E** pattern su stderr) lo stesso prompt passa al provider successivo in `preference`. | È lo switch "quando un abbonamento si esaurisce" — il requisito originale del progetto. (§5) |
+| **Circuit Breaker** | Un provider rate-limited resta **escluso per il resto del run**, con budget di retry globale + backoff sugli errori transitori. | Evita di martellare un provider già al muro (accelererebbe solo il blocco) e di sprecare il budget di retry. (§9) |
+| **Durable Execution / Checkpointing** | `.mentis/state.json` per-unità (`pending/running/done` + hash input + artefatto), scritto **dopo ogni unità**. Al rilancio salta il `done` valido e riprende dalla prima unità non fatta; `--fresh` resetta. | Il rate-limit è una **porta binaria** (429), non un segnale che scema: niente "ultimo respiro" per salvare lo stato. Quindi si salva *in continuo*, così è già su disco *prima* che la porta sbatta. Un crash/switch perde al più il ragionamento di *una* unità. (§10) |
+| **Human-in-the-Loop riprendibile** | `needs_input` → le domande vanno in `.mentis/questions/`, l'unità va in `awaiting_input`, la pipeline si ferma; rispondi in `.mentis/answers/` e al rilancio riprende con le risposte iniettate. | `AskUserQuestion` è incompatibile con l'esecuzione headless: l'HITL diventa un **handshake su file**, riprendibile a distanza di tempo. (§13) |
+
+### I pattern di qualità
+
+| Pattern | Come lo usa mentis | Perché |
+|---|---|---|
+| **Reflection** | Auto-critica dello **stesso** provider prima della consegna (`--quality reflect`). | Filtro economico per errori oggettivi — ma **vale davvero solo con un segnale esterno** (test, build): forte su developer/qa, debole su prosa. Per questo il default è pesato sul rischio, non `full` piatto. (§9) |
+| **Evaluator-Optimizer** | Un provider **diverso** valuta con una **rubrica per tipo di agente**; se boccia, l'implementer revisiona. Loop **cap = 2**, poi **stop + escalation all'utente** (niente merge). | Un ciclo genera→valuta→revisiona alza la qualità senza loop infiniti; il cap trasforma il disaccordo persistente in una decisione umana invece che in un ping-pong. (§9) |
+| **Structured Output Contract** | Ogni agente chiude con `[[MENTIS-RESULT]]{status,artifacts,questions,note}`; `parse_result` lo consuma. | La diagnosi-radice del review esterno era *"il contratto era prosa, non un'interfaccia"*. Ora l'orchestratore consuma un'**interfaccia tipizzata**, non testo da interpretare. (§13) |
+
+### Il pattern originale — perché mentis esiste
+
+| Pattern | Come lo usa mentis | Perché |
+|---|---|---|
+| **Review anti-bias cross-provider** | Il reviewer **non gira mai** sul provider che ha scritto il codice. L'orchestratore legge l'implementer da `state.json` e instrada il reviewer sull'**altro**; doppia sicurezza nel prompt del reviewer che rifiuta se coincidono. Con un solo provider attivo → degrada e **scala all'utente**, non auto-approva. | Un modello che rivede sé stesso condivide i propri **punti ciechi**: l'intero senso della review è un secondo parere *indipendente*. È la generalizzazione dell'evaluator, ed è il motivo per cui mentis è multi-provider e non multi-modello-dello-stesso-vendor. (§7) |
+| **Load-aware balancing + role rotation** | Contatore di lavoro pesato per provider (implement 1.0 / evaluate 0.3 …): implementa il **meno carico**, valuta il **più scarico tra gli altri**. Reset **a finestra** (le quote si sbloccano a scatti ogni N ore), non a decadimento. | Con ruoli fissi un provider si svuota ~3× più in fretta e arrivi al muro con l'altro quasi libero: throughput sprecato. La rotazione fa esaurire i **due budget insieme** → massimo numero di artefatti prima di uno stop. (§11) |
+| **Worktree isolation (parallelismo)** | In `--parallel` ogni unità implementante gira in un git worktree isolato (branch `mentis/{unit}`), issue indipendenti su **provider distinti** in contemporanea. | Issue senza dipendenze non devono aspettarsi a vicenda né collidere su `.git/index.lock`; girarle su provider diversi non accelera nessun rate-limit. (§11–12) |
+
+> **Nota onesta.** Questi pattern sono implementati e coperti da test in dry-run, ma mentis **non ha ancora eseguito una chiamata reale**: la calibrazione fine (ore-finestra del balancer, flag esatti delle CLI) arriverà col primo run con abbonamenti attivi.
+
+---
+
 ## Struttura
 
 ```
