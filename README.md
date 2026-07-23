@@ -152,6 +152,8 @@ python3 orchestrator/mentis.py doctor --provider codex \
 
 mentis non inventa un'architettura da zero: **compone pattern agentici ormai standard** (Anthropic "Building effective agents", la letteratura orchestrator-worker del 2026) su una spina dorsale semplice, più **un pattern originale** — la review anti-bias cross-provider — che è la ragione d'essere del progetto. Ogni scelta ha un costo: sotto, il *perché* accanto al *come*. Il razionale esteso è in **[DESIGN.md](DESIGN.md)**.
 
+> **Se leggi una cosa sola:** ciò che rende mentis *mentis* sono tre scelte — l'**handoff su disco** (rende la pipeline portabile tra provider), la **review anti-bias cross-provider** (un secondo parere davvero indipendente) e il **balancing con rotazione dei ruoli** (i due abbonamenti si esauriscono insieme). Tutto il resto sono pattern standard che mentis compone per reggere l'esecuzione headless multi-provider.
+
 ### La spina dorsale
 
 | Pattern | Come lo usa mentis | Perché |
