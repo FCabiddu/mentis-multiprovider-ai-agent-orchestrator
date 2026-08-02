@@ -60,6 +60,15 @@ cmd     = "claude -p {prompt} --model {model} --permission-mode acceptEdits"
 # di quota diventano attendibili. Richiede il flag corrispondente nel `cmd` qui
 # sopra — quindi resta false finché non l'hai verificato con la CLI installata.
 usage_json = false
+# usage_scan: cartella delle TRASCRIZIONI locali della CLI. Claude Code registra
+# ogni messaggio in ~/.claude/projects/**/*.jsonl con il blocco `usage` completo,
+# e quelle trascrizioni includono TUTTO ciò che passa dalla CLI: le tue sessioni
+# INTERATTIVE e le chiamate headless di mentis. È il modo — l'unico senza un
+# endpoint di quota — per vedere anche il consumo fatto fuori da mentis.
+# Quando è attiva SOSTITUISCE il contatore interno (non ci si somma: le chiamate
+# di mentis sono già lì dentro). Resta fuori solo claude.ai nel browser.
+# Vuoto = disattivata.
+usage_scan = "~/.claude/projects"
 # comando per elencare i modelli disponibili (usato da `mentis.py doctor`).
 # ⚠️ VERIFICA il flag reale con `claude --help`. Vuoto = doctor non può
 # interrogare la CLI, gli passi la lista a mano con --models.

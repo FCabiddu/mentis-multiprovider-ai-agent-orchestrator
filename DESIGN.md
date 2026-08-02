@@ -421,9 +421,27 @@ chiamata rifiutata. Per un meccanismo di sicurezza è la direzione giusta: prude
 non temerario. Finché il muro non è mai stato toccato, `balance` dice
 **«quota usata: IGNOTA»** invece di inventare un numero.
 
-Restano fuori dal conto le sessioni interattive e claude.ai: non si vedono in
-anticipo, ma emergono come un rate-limit che arriva prima del previsto — e quello
-viene registrato.
+### Il consumo fuori da mentis: risolto per la CLI
+
+Restava un buco dichiarato come vincolo: la quota consumata dalle sessioni
+interattive. Non lo era. Claude Code registra **ogni** messaggio in
+`~/.claude/projects/**/*.jsonl` con il blocco `usage` completo, e quelle
+trascrizioni includono tutto ciò che passa dalla CLI — le sessioni che apri tu e
+le chiamate headless di mentis.
+
+`usage_scan` (attivo di default su Claude) le legge e le somma con la stessa
+formula pesata usata ovunque (`weighted_tokens`: cache-read 0,1×, cache-write
+1,25×). Quando è attiva **sostituisce** il contatore interno invece di sommarsi:
+le chiamate di mentis sono già dentro le trascrizioni, e sommarle le conterebbe
+due volte. Una cache di 60 secondi evita di riscansionare a ogni unità.
+
+Quanto pesa davvero: misurato su questa macchina, **43 milioni di token pesati in
+una finestra di 5 ore**, quasi tutti da sessioni interattive. Senza la scansione
+mentis sarebbe partito convinto che la quota fosse intatta.
+
+Resta fuori solo ciò che non passa dalla CLI: **claude.ai nel browser**. E Codex,
+per cui non è stato verificato un equivalente locale — lì il conteggio resta
+quello delle sole chiamate di mentis.
 
 **v2 (non fatto):** auto-calibrare i pesi dalle dimensioni reali osservate (ora
 il dato c'è: `chars_in`/`chars_out` in `calls.jsonl`, e `mentis status` lo mostra

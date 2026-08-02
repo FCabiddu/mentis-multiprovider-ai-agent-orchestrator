@@ -35,7 +35,15 @@ def tearDownModule():
 
 
 def _cfg():
-    return mentis.load_toml(mentis.CONFIG_PATH)
+    """Config di test: la scansione delle trascrizioni è DISATTIVATA di default.
+    Altrimenti ogni test leggerebbe le sessioni reali dell'utente in ~/.claude —
+    risultati non deterministici, suite lenta, e una dipendenza dalla macchina.
+    I test che la vogliono la impostano esplicitamente su una cartella finta."""
+    cfg = mentis.load_toml(mentis.CONFIG_PATH)
+    for pc in cfg.get("providers", {}).values():
+        pc["usage_scan"] = ""
+    mentis._USAGE_SCAN_CACHE.clear()
+    return cfg
 
 
 class TestToml(unittest.TestCase):
@@ -739,8 +747,8 @@ class TestTokenReali(_SharedBalanceCase):
             mentis.charge({"units": {}}, "claude", "implement", cfg, d, False, "balanced", tokens=5000)
             self.assertIsNone(mentis.quota_used_pct("claude", cfg))   # tetto ancora ignoto
             mentis.mark_exhausted("claude", cfg)                      # ora il tetto è 5000
-            pct, unit = mentis.quota_used_pct("claude", cfg)
-            self.assertEqual(unit, "token")
+            pct, src = mentis.quota_used_pct("claude", cfg)
+            self.assertNotEqual(src, "stima")        # misurato, non stimato dai pesi
             self.assertAlmostEqual(pct, 100.0, places=1)
         finally:
             shutil.rmtree(d)
@@ -758,6 +766,63 @@ class TestTokenReali(_SharedBalanceCase):
             self.assertEqual(b["limit_tokens"], 5000)     # la calibrazione no
         finally:
             shutil.rmtree(d)
+
+
+class TestConsumoEsterno(_SharedBalanceCase):
+    """Le trascrizioni locali della CLI rendono visibile anche l'uso interattivo."""
+
+    def setUp(self):
+        super().setUp()
+        self.tx = Path(tempfile.mkdtemp())
+        self.cfg = _cfg()
+        self.cfg["providers"]["claude"]["usage_scan"] = str(self.tx)
+
+    def tearDown(self):
+        shutil.rmtree(self.tx, ignore_errors=True)
+        mentis._USAGE_SCAN_CACHE.clear()
+        super().tearDown()
+
+    def _write_session(self, name, entries):
+        f = self.tx / name
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("\n".join(json.dumps(e) for e in entries))
+
+    def test_legge_i_token_delle_sessioni_interattive(self):
+        now = time.time()
+        iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+        self._write_session("sess.jsonl", [
+            {"type": "assistant", "timestamp": iso,
+             "message": {"model": "claude-opus-5",
+                         "usage": {"input_tokens": 1000, "output_tokens": 500}}},
+            {"type": "user", "timestamp": iso, "message": {"content": "ciao"}},
+        ])
+        tok, src = mentis.observed_tokens("claude", self.cfg)
+        self.assertEqual(src, "trascrizioni")
+        self.assertEqual(tok, 1500)
+
+    def test_la_cache_pesa_meno_dei_token_nuovi(self):
+        now = time.time()
+        iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+        self._write_session("s2.jsonl", [
+            {"type": "assistant", "timestamp": iso, "message": {"usage": {
+                "input_tokens": 0, "output_tokens": 0,
+                "cache_read_input_tokens": 10000, "cache_creation_input_tokens": 0}}}])
+        tok, _ = mentis.observed_tokens("claude", self.cfg)
+        self.assertEqual(tok, 1000)                 # 10.000 letti da cache = 0,1x
+
+    def test_senza_scansione_configurata_si_ripiega_su_mentis(self):
+        cfg = _cfg()                                 # senza usage_scan
+        d = Path(tempfile.mkdtemp())
+        try:
+            mentis.charge({"units": {}}, "claude", "implement", cfg, d, False, "balanced", tokens=77)
+            self.assertEqual(mentis.observed_tokens("claude", cfg), (77, "solo mentis"))
+        finally:
+            shutil.rmtree(d)
+
+    def test_cartella_inesistente_non_rompe_nulla(self):
+        cfg = _cfg()
+        cfg["providers"]["claude"]["usage_scan"] = "/non/esiste/da/nessuna/parte"
+        self.assertIsNone(mentis.scan_local_usage("claude", cfg, 0))
 
 
 if __name__ == "__main__":

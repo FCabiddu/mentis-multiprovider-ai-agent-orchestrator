@@ -33,7 +33,7 @@ senza eseguire nulla. Utile per capire il comportamento prima di attivare le CLI
 Dipendenze: nessuna. Solo stdlib. Python ≥ 3.7.
 """
 from __future__ import annotations
-import sys, os, re, json, shlex, shutil, subprocess, argparse, time, hashlib, threading
+import sys, os, re, json, shlex, shutil, subprocess, argparse, time, datetime, hashlib, threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 try:
@@ -806,6 +806,8 @@ def balance_path() -> Path:
 
 @contextmanager
 def open_balance(write: bool = False):
+    # NB: né _BALANCE_LOCK né flock sono rientranti — non chiamare da qui dentro
+    # nulla che rilegga il bilancio (observed_tokens, current_cost, …).
     """Apre il bilancio condiviso in lettura-modifica-scrittura, serializzando
     thread (in-process) e processi (flock). Se il lock non è disponibile sulla
     piattaforma si degrada a non-bloccante: peggio un conteggio impreciso che un
@@ -889,6 +891,9 @@ def mark_exhausted(provider: str, cfg: dict, project: Path = None):
          in poi mentis ha finalmente un denominatore e può dire "sei al 60%"
          invece di un numero senza scala. Si media sulle osservazioni successive,
          perché il limite reale varia (modello usato, lunghezza delle sessioni)."""
+    # PRIMA di prendere il lock del bilancio: observed_tokens lo rilegge, e il
+    # lock (threading + flock) non è rientrante — chiamarlo dentro si pianta.
+    reached_tok = observed_tokens(provider, cfg)[0]
     with open_balance(write=True) as bal:
         b = bal["providers"].setdefault(provider, {"cost": 0.0, "window_start": int(time.time())})
         b.pop("reset", None)
@@ -897,7 +902,6 @@ def mark_exhausted(provider: str, cfg: dict, project: Path = None):
             prev, n = b.get("limit_observed"), b.get("limit_samples", 0)
             b["limit_observed"] = round(reached if not prev else (prev * n + reached) / (n + 1), 3)
             b["limit_samples"] = n + 1
-        reached_tok = int(b.get("tokens", 0))       # se contiamo i token veri, il tetto è QUESTO
         if reached_tok > 0:
             prevt, nt = b.get("limit_tokens"), b.get("limit_tokens_samples", 0)
             b["limit_tokens"] = int(reached_tok if not prevt else (prevt * nt + reached_tok) / (nt + 1))
@@ -924,8 +928,10 @@ def quota_used_pct(provider: str, cfg: dict):
     current_cost(provider, cfg)                    # applica l'eventuale reset di finestra
     with open_balance(write=False) as bal:
         b = bal["providers"].get(provider) or {}
-    if b.get("limit_tokens") and b.get("tokens"):
-        return min(999.0, 100.0 * b["tokens"] / b["limit_tokens"]), "token"
+    if b.get("limit_tokens"):
+        tok, src = observed_tokens(provider, cfg)
+        if tok:
+            return min(999.0, 100.0 * tok / b["limit_tokens"]), src
     if b.get("limit_observed"):
         return min(999.0, 100.0 * b.get("cost", 0.0) / b["limit_observed"]), "stima"
     return None
@@ -1109,6 +1115,88 @@ def parse_result(output: str):
         if isinstance(data, dict) and data.get("status") in ("done", "needs_input", "failed"):
             return data
     return None
+
+
+_USAGE_SCAN_CACHE = {}            # (provider, since) -> (letto_a, token)
+
+
+def weighted_tokens(u: dict) -> float:
+    """Token 'pesati' come li pesa il pricing: una lettura di cache costa una
+    frazione, una scrittura di cache un po' di più. Serve una formula sola, usata
+    ovunque, altrimenti tetto osservato e consumo misurato non sono confrontabili."""
+    return (float(u.get("input_tokens", 0) or 0)
+            + float(u.get("output_tokens", 0) or 0)
+            + 1.25 * float(u.get("cache_creation_input_tokens", 0) or 0)
+            + 0.10 * float(u.get("cache_read_input_tokens", 0) or 0))
+
+
+def scan_local_usage(provider: str, cfg: dict, since_ts: float, ttl: int = 60):
+    """Consumo REALE del provider letto dalle trascrizioni locali della sua CLI.
+
+    Claude Code registra ogni messaggio in `~/.claude/projects/**/*.jsonl` con il
+    blocco `usage` completo. Quelle trascrizioni includono **tutto** ciò che passa
+    dalla CLI: le sessioni interattive che apri tu e le chiamate headless di
+    mentis. È quindi la fonte di verità più completa che esista senza un endpoint
+    di quota — e per la stessa ragione sostituisce il contatore interno invece di
+    sommarsi ad esso (altrimenti le chiamate di mentis verrebbero contate due
+    volte). Resta fuori solo ciò che non passa dalla CLI: claude.ai nel browser.
+
+    `None` se la scansione non è configurata o la cartella non esiste."""
+    path = (cfg.get("providers", {}).get(provider) or {}).get("usage_scan")
+    if not path:
+        return None
+    root = Path(os.path.expanduser(str(path)))
+    if not root.is_dir():
+        return None
+    key = (provider, int(since_ts))
+    hit = _USAGE_SCAN_CACHE.get(key)
+    if hit and time.time() - hit[0] < ttl:         # la scansione costa: non a ogni unità
+        return hit[1]
+    total = 0.0
+    for f in root.rglob("*.jsonl"):
+        try:
+            if f.stat().st_mtime < since_ts:       # file interamente più vecchio della finestra
+                continue
+            raw = f.read_text(errors="ignore")
+        except OSError:
+            continue
+        for line in raw.splitlines():
+            if '"usage"' not in line:
+                continue
+            try:
+                e = json.loads(line)
+            except Exception:
+                continue
+            msg = e.get("message")
+            u = msg.get("usage") if isinstance(msg, dict) else None
+            if not isinstance(u, dict):
+                continue
+            ts = e.get("timestamp")
+            if ts:
+                try:
+                    t = datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+                    if t < since_ts:
+                        continue
+                except Exception:
+                    pass
+            total += weighted_tokens(u)
+    _USAGE_SCAN_CACHE[key] = (time.time(), int(total))
+    return int(total)
+
+
+def observed_tokens(provider: str, cfg: dict):
+    """Token consumati nella finestra corrente → (token, fonte).
+
+    Se le trascrizioni locali sono leggibili sono la verità (comprendono l'uso
+    interattivo); altrimenti si ripiega su quanto ha contato mentis stesso, che
+    vede solo le proprie chiamate."""
+    with open_balance(write=False) as bal:
+        b = bal["providers"].get(provider) or {}
+    since = b.get("window_start") or (time.time() - _window_hours(cfg, provider) * 3600)
+    scanned = scan_local_usage(provider, cfg, since)
+    if scanned is not None:
+        return scanned, "trascrizioni"
+    return int(b.get("tokens", 0)), "solo mentis"
 
 
 def parse_usage_envelope(stdout: str):
@@ -1769,9 +1857,16 @@ def cmd_balance(cfg, reset: bool, provider: str, add: str):
     print("   La percentuale compare solo DOPO il primo rate-limit reale: è quello a dire")
     print("   quanto vale il 100%. Nessuna CLI a subscription espone la quota residua")
     print("   (`/usage` in Claude Code e `/status` in Codex sono solo interattivi), quindi")
-    print("   il tetto si impara sbattendoci contro una volta — poi la stima è tarata.")
-    print("   Il consumo fatto FUORI da mentis (Claude Code interattivo, claude.ai) non è")
-    print("   visibile qui: emerge come un rate-limit anticipato. `--add` lo anticipa a mano.")
+    print("   il tetto si impara sbattendoci contro una volta — poi la misura è tarata.")
+    for p in providers:
+        tok, src = observed_tokens(p, cfg)
+        if src == "trascrizioni":
+            print(f"\n   [{p}] fonte: trascrizioni locali della CLI → {tok:,} token pesati nella")
+            print( "         finestra. Comprende le tue sessioni INTERATTIVE, non solo mentis.")
+            print( "         Fuori resta solo ciò che non passa dalla CLI (claude.ai nel browser).")
+        else:
+            print(f"\n   [{p}] fonte: solo le chiamate di mentis — il consumo interattivo NON si")
+            print( "         vede. Configura `usage_scan` sul provider per includerlo.")
 
 
 def cmd_status(project, cfg):
@@ -1824,8 +1919,14 @@ def cmd_status(project, cfg):
         if tot_obs:
             print("     ↳ se stima e osservato divergono molto, ricalibra "
                   "[balance.weights]/[balance.tier] sui dati osservati.")
-        print("     ↳ la quota che consumi FUORI da mentis (Claude Code interattivo, "
-              "claude.ai) non è visibile qui: registrala con `mentis balance --add`.")
+        srcs = {p: observed_tokens(p, cfg)[1] for p in cfg.get("preference", [])}
+        if "trascrizioni" in srcs.values():
+            print("     ↳ per i provider con `usage_scan` il conteggio arriva dalle trascrizioni "
+                  "della CLI\n       e comprende anche le tue sessioni interattive. Dettagli: "
+                  "`mentis balance`.")
+        else:
+            print("     ↳ qui si vede solo il consumo di mentis. Per includere le sessioni "
+                  "interattive\n       configura `usage_scan` sul provider.")
     units = state.get("units", {})
     if units:
         c = Counter(u.get("status", "?") for u in units.values())

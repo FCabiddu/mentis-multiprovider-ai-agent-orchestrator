@@ -124,6 +124,21 @@ giusta.
 - [ ] Dopo il primo rate-limit: `mentis balance` mostra il tetto osservato
 - [ ] La percentuale è plausibile rispetto a `/usage` letto in interattivo
 
+### C2bis. Verificare la scansione delle trascrizioni
+
+`usage_scan` è attivo di default su Claude e legge `~/.claude/projects`. È ciò
+che rende visibile **anche il consumo interattivo**: senza, mentis vedrebbe solo
+le proprie chiamate e crederebbe la quota intatta mentre l'hai già spesa altrove.
+
+```bash
+mentis balance     # la riga [claude] deve dire "fonte: trascrizioni locali"
+```
+
+- [ ] La fonte è «trascrizioni», non «solo le chiamate di mentis»
+- [ ] Il numero è dello stesso ordine di grandezza di quanto hai lavorato oggi
+- [ ] Per Codex: verificato se `~/.codex` tiene una history con i token, e in
+      caso affermativo impostato `usage_scan` anche lì
+
 ### C3. I numeri da ritarare
 
 Tutti in `config/mentis.toml`, tutti dichiarati come stime:
@@ -148,11 +163,13 @@ La materia prima è in `.mentis/logs/calls.jsonl` (`chars_in`, `chars_out`,
 
 Non sono bug e non si chiudono con la calibrazione: sono vincoli.
 
-- **Il consumo fuori da mentis non è visibile.** Una sessione interattiva di
-  Claude Code o claude.ai consuma la stessa quota. Non c'è modo di leggerlo:
-  emerge come un rate-limit che arriva prima del previsto — e quello viene
-  registrato nel bilancio condiviso. `mentis balance --add claude=5` lo anticipa
-  a mano, ma è una scorciatoia, non un meccanismo.
+- **Il consumo nel browser (claude.ai) non è visibile.** Quello dalla CLI invece
+  sì: `usage_scan` legge le trascrizioni locali di Claude Code
+  (`~/.claude/projects/**/*.jsonl`), che contengono il blocco `usage` di ogni
+  messaggio — sessioni interattive comprese. È attivo di default; verifica con
+  `mentis balance` che la fonte dica «trascrizioni». Per Codex non c'è ancora un
+  equivalente verificato: lì il conteggio resta quello delle sole chiamate di
+  mentis, finché non controlli se `~/.codex` tiene una history analoga.
 - **Il contesto effimero non è trasferibile.** Uno switch di provider a metà step
   perde il ragionamento vivo della CLI. Mitigato dalla nota di handoff su disco e
   dal checkpoint per-unità, non eliminato.
