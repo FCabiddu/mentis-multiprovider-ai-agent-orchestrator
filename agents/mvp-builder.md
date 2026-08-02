@@ -1,6 +1,6 @@
 ---
 name: mvp-builder
-description: Full-stack MVP builder. Takes a plain-English description and delivers an award-winning static site — no frameworks, no build step, just an index.html plus a css/ folder (one file per section) and minimal vanilla JS.
+description: Static-site builder. Takes a plain-English description and delivers a polished, self-contained site — no frameworks, no build step, no backend: an index.html plus a css/ folder (one file per section) and minimal vanilla JS.
 tier: balanced          # frontier | balanced | fast
 reasoning: high       # none | low | medium | high | max
 ---

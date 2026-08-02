@@ -377,150 +377,56 @@ After all fixes, do a final Write with:
 
 ---
 
-## Step 6 — Issue tracking (mentis: LOCALE, niente Linear)
+## Step 6 — Issue tracking: the local `tasks/` board
 
-Sotto mentis il tracking è **locale e provider-neutral**: **NON** usare tool
-Linear/MCP e **NON** chiedere team/progetti. **Salta interamente** i sotto-passi
-6a–6d e la sezione `LINEAR_API_TOKEN`/blocking-relations qui sotto (sono legacy
-pocket-it, N/A qui). L'unico output di questo step è il **`*_DEPS.json` canonico**
-descritto più sotto in *"Write the deps JSON file"*: vai direttamente a quella
-parte, scrivilo, poi passa allo Step 7.
+Under mentis the tracking is **local and provider-neutral**: no Linear, no MCP, no external service, and nothing to ask the user. This step produces exactly two artefacts, and they are contracts consumed by other agents:
 
-### 6a — Connect to Linear
+1. the **`tasks/` board** — one file per implementable issue, plus an index (this sub-step);
+2. the canonical **`*_DEPS.json`** — the dependency graph the orchestrator reads to fan out per issue (sub-step 6e).
 
-Use `mcp__claude_ai_Linear__list_teams` to fetch available teams. Use `AskUserQuestion` to ask:
+Both are mandatory. `developer`, `devops-engineer`, `qa-engineer` and `reviewer` all read `tasks/` and update it as they work: if you do not write it, they find nothing and have to guess.
 
-> "Which Linear team should I create these issues under? Here are the available teams: {list team names and IDs}"
+### 6a — Write one task file per issue
 
-Wait for the team selection.
+For every Story and Task in Section 3 that is actually implementable, write `./tasks/{ID}-{slug-of-title}.md` (create the `tasks/` directory if missing) with **exactly** this shape — downstream agents parse these fields:
 
-### 6b — Create or select a project
+```markdown
+# {ID} — {Title}
 
-Use `mcp__claude_ai_Linear__list_projects` to fetch all existing projects. For each project, compare its name and description against:
-- The project/feature name derived in Step 2
-- The executive summary from Section 1
-- Key domain terms and feature areas identified in the input
+**Status:** Todo
+**Priority:** {High | Medium | Low}   ← from MoSCoW: Must→High, Should→Medium, Could→Low
+**Label:** {Backend | Frontend | DevOps | QA}
+**Estimate:** {from the WBS}
+**Branch:** 
+**Dependencies:** {comma-separated IDs this task requires, or "none"}
 
-Rank the existing projects into three groups:
-- **Strong match**: name or description clearly overlaps with the current planning scope (same product area, same feature domain)
-- **Possible match**: partial or thematic overlap worth flagging
-- **No match**: unrelated
+## Description
+{what the task delivers, in 2–4 lines}
 
-Then use `AskUserQuestion` to present the findings:
-
-> "I found the following existing Linear projects. Which should I use for these issues?
->
-> **Strong matches:**
-> {list name + one-line description for each, or "None"}
->
-> **Possible matches:**
-> {list name + one-line description for each, or "None"}
->
-> Reply with the project name to use an existing one, or type **'new'** to create a fresh project named '{Project Name from document}'."
-
-Wait for the answer. If the user selects an existing project, retrieve its ID from the list already fetched — do not call `list_projects` again. Record it as `{project_id}`. If the user says **'new'**, create a new project using `mcp__claude_ai_Linear__save_project` with:
-- `name`: {Project Name from document}
-- `description`: Executive Summary from Section 1
-- `teamIds`: [selected team ID]
-
-Record the returned project ID as `{project_id}` — every issue created in Step 6d must include it.
-
-### 6c — Create Epics as top-level parent issues
-
-For each Epic in Section 3, use `mcp__claude_ai_Linear__save_issue` to create a top-level parent issue:
-- `title`: {EPIC-n: Epic Title}
-- `description`: Epic Goal from Section 3, followed by a one-line summary of each Story it contains
-- `teamId`: selected team ID
-- `projectId`: {project_id from Step 6b}
-
-Do **not** set `parentId` — Epics are top-level issues.
-
-**As each Epic issue is created**, immediately record it in the tracking map:
-
-```
-EPIC-1  → { linearId: "<uuid>", linearIdentifier: "FC-40", title: "..." }
-EPIC-2  → { linearId: "<uuid>", linearIdentifier: "FC-41", title: "..." }
+**Acceptance criteria:**
+- [ ] {criterion 1 — observable and testable}
+- [ ] {criterion 2}
 ```
 
-You will need these IDs in Step 6d so Stories can be linked to their parent Epic.
+Rules:
+- `{ID}` must be **the same identifier** you use in the DEPS file (6e) and in Section 3 — the orchestrator matches issues to task files by this id, and the reviewer extracts it from the branch name.
+- **Leave `Branch:` empty**: the implementing agent fills it in.
+- `Label` drives which agent implements the issue (`DevOps` → devops-engineer, `Backend`/`Frontend` → developer), so choose it deliberately.
+- The `## Description` section is what the reviewer reads to check acceptance criteria: write criteria that can actually be verified against a diff.
 
-### 6d — Create Stories and Tasks as Issues
+### 6b — Write the board index
 
-Fetch available statuses with `mcp__claude_ai_Linear__list_issue_statuses`.
+Write `./tasks/INDEX.md`:
 
-**Label setup — do this entirely before creating any issues.**
+```markdown
+# Task board — {Project Name}
 
-The label map must be complete and guaranteed before a single issue is created. Follow these steps in order:
-
-**Step A — Identify required types.** Scan all Tasks in Section 3 and collect the distinct task types present (e.g. Backend, Frontend, DevOps, QA, Design). Only work with types that actually appear in the plan.
-
-**Step B — Fetch existing labels.** Call `mcp__claude_ai_Linear__list_issue_labels`. For each required type, search the returned list for a match using this lookup (case-insensitive, partial match):
-
-| Task Type | Label to match |
-|-----------|---------------|
-| Backend | `backend` |
-| Frontend | `frontend` |
-| DevOps | `devops` or `infrastructure` or `infra` |
-| QA | `qa` or `testing` |
-| Design | `design` or `ux` |
-
-**Step C — Create any missing labels.** For every required type that had no match in Step B, call `mcp__claude_ai_Linear__create_issue_label` immediately and record the returned ID:
-
-| Label name | Colour |
-|------------|--------|
-| `Backend` | `#6366f1` (indigo) |
-| `Frontend` | `#06b6d4` (cyan) |
-| `DevOps` | `#f97316` (orange) |
-| `QA` | `#22c55e` (green) |
-| `Design` | `#ec4899` (pink) |
-
-Also always check for and create the pipeline workflow label `Auto-merge` (color `#94a3b8`, slate) if it does not already exist. This mirrors the GitHub PR label of the same name: implementing agents (`/developer`, `/devops-engineer`, `/qa-engineer`) apply it to their PRs when the user chose Auto-merge for the session, and the target project's auto-merge workflow merges once CI is green and review passes.
-
-**Step D — Build the final map.** You now have a label ID for every required type. Write it down explicitly before proceeding:
-
-```
-Backend    → <id>
-Frontend   → <id>
-DevOps     → <id>
-QA         → <id>
-Design     → <id>   (if present)
-Auto-merge → <id>
+| ID | Title | Status | Labels |
+|----|-------|--------|--------|
+| {ID} | {Title} | Todo | {Label} |
 ```
 
-Do not proceed to issue creation until every required type has an ID in this map.
-
----
-
-For each Story in Section 3, use `mcp__claude_ai_Linear__save_issue` to create a child issue under its Epic:
-- `title`: {STORY-n.m: Story Title}
-- `description`: User story text + acceptance criteria formatted as a markdown checklist
-- `teamId`: selected team ID
-- `projectId`: {project_id from Step 6b}
-- `parentId`: Epic issue ID from the tracking map (e.g. EPIC-1's linearId for all STORY-1.x issues)
-- `priority`: mapped from MoSCoW (Must Have → Urgent, Should Have → Medium, Could Have → Low)
-
-For each Task under that Story, create a child issue:
-- `title`: {T-n.m.k: Task description}
-- `description`: Task type, estimate, assignee role, dependency
-- `teamId`: selected team ID
-- `projectId`: {project_id from Step 6b}
-- `parentId`: parent Story issue ID (not the Epic — Tasks nest under Stories, Stories nest under Epics)
-- `labelIds`: [label ID from the map built in Step D — this field is REQUIRED, never omit it]
-
-This creates a strict 3-level hierarchy in Linear: **Epic → Story → Task**. Every issue is connected and navigable from the board.
-
-**As each issue is created**, record the returned data in the tracking map (add to the Epic entries from Step 6c):
-
-```
-EPIC-1     → { linearId: "<uuid>", linearIdentifier: "FC-40", title: "..." }
-STORY-1.1  → { linearId: "<uuid>", linearIdentifier: "FC-41", title: "..." }
-T-1.1.1    → { linearId: "<uuid>", linearIdentifier: "FC-42", title: "..." }
-...
-```
-
-You will need this map in Step 6e. Do not discard it.
-
----
+One row per task file, in dependency order (a task never appears before something it depends on). Keep the column order exactly as above: agents append rows to this file with plain `echo`.
 
 ### 6e — Costruisci il grafo delle dipendenze → scrivi il DEPS.json canonico
 

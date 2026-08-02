@@ -11,17 +11,18 @@ The user has provided: {{ARGUMENTS}}
 
 ---
 
-## Step 0a — Session auto-merge preference
+## Step 0a — Merge policy
 
-Before doing anything else, check whether a session preference has already been recorded. The preference file is scoped to the current repository:
+The merge into the main branch is **never** yours to make: it stays with the user. Default is **Manual approval** (`AUTO_MERGE=false`).
 
 ```bash
-AUTOMERGE_FILE="/tmp/$(basename "$(git rev-parse --show-toplevel)")-automerge"
-cat "$AUTOMERGE_FILE" 2>/dev/null || echo "missing"
+cat .mentis/automerge 2>/dev/null || echo "manual"
 ```
 
-- **If the file exists and contains `true` or `false`:** read its value silently. Set `AUTO_MERGE=true` or `AUTO_MERGE=false` for use in Step 5f. Do **not** ask the user again.
-- **If the file is missing:** default to **Manual approval** — set `AUTO_MERGE=false`. Do NOT use `AskUserQuestion`: under mentis the merge decision belongs to the user, outside the pipeline. (To opt into auto-merge, write `true` to `$AUTOMERGE_FILE` manually before running.)
+- Missing, unreadable, or anything other than `true` → `AUTO_MERGE=false`.
+- Exactly `true` → `AUTO_MERGE=true` (the user opted in for THIS project).
+
+The flag lives inside the project under `.mentis/` (gitignored), never in `/tmp`: a path in `/tmp` is predictable and writable by any local process, so a third party could switch auto-merge on for you. Do NOT use `AskUserQuestion` — under mentis there is no interactive channel.
 
 ---
 
@@ -112,24 +113,21 @@ If no infrastructure files exist yet, note that and proceed — you will create 
 
 ---
 
-## Step 3.5 — Create working branch
+## Step 3.5 — Working branch
 
-Parse the branch name from your arguments (format: `Branch: {branch-name}`). Also check whether the arguments include the phrase "ALREADY EXISTS".
+The orchestrator always passes `Branch: {branch-name}`, plus a `[mentis — contesto reale del repo]` block describing what this repository actually supports. **That block wins over anything written here.**
 
-If the branch does **not** exist:
-
-```bash
-git checkout main
-git pull origin main
-git checkout -b {branch-name}
-```
-
-If the arguments say "ALREADY EXISTS":
+Check where you are before touching branches:
 
 ```bash
-git checkout {branch-name}
-git pull origin {branch-name}
+git rev-parse --abbrev-ref HEAD    # the branch you are on right now
+git remote                          # empty output = NO remote: never push, never pull
 ```
+
+- **Already on `{branch-name}`** (typical under `--parallel`: the orchestrator put you in an isolated worktree) → do nothing. Never `git checkout main` here: `main` is checked out elsewhere and the command fails.
+- **Not on it, and it does not exist** → `git checkout -b {branch-name}` from the current HEAD. Do **not** switch to `main` first: previous work may live on the branch you are on.
+- **Not on it, and it exists** → `git checkout {branch-name}`.
+- **`git pull` / `git push` only if `git remote` printed something** — with no remote they fail, and that is expected.
 
 ---
 
@@ -292,14 +290,28 @@ git add -A
 git commit -m "$(cat <<'EOF'
 {issue_title}
 
-Linear: {issue_id}
-Co-Authored-By: Claude <noreply@anthropic.com>
+Issue: {issue_id}
+Signed-off-by: mentis
 EOF
 )"
+```
+
+**Committing is mandatory; pushing is conditional.** Check what this repository supports:
+
+```bash
+git remote                                    # empty → no remote
+command -v gh >/dev/null && gh auth status    # non-zero → gh unusable
+```
+
+**No remote or no `gh`** → stop here: no push, no PR, no CI checks. Report branch, commit SHA and `no remote: delivered as a local branch`, then skip to the next step. Supported outcome, not a failure.
+
+**Remote and `gh` available** → push and continue:
+
+```bash
 git push -u origin {branch-name}
 ```
 
-**CI-fix mode** — if your arguments contain `CI Failure:` (you were spawned by the reviewer to fix a failing CI job):
+**CI-fix mode** — if your arguments contain `CI Failure:` (you were dispatched to fix a failing CI job):
 
 - Do **not** open a new PR. The PR already exists. Instead, post a comment on it:
   ```bash
