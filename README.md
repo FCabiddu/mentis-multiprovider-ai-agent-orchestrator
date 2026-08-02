@@ -54,7 +54,7 @@ Ogni passo scrive il suo artefatto su disco; il passo dopo lo legge. È questo �
 | 🔀 | **De-bias / challenge** | Stesso task su più provider, output affiancati per il confronto (`--compare`). |
 | ↯ | **Fallback automatico** | Se un provider esaurisce i limiti, il task passa da solo al successivo. |
 | 🛡️ | **Review anti-bias** | Il reviewer gira **sempre** su un provider diverso da chi ha implementato. |
-| ⚖️ | **Balancer load-aware** | I ruoli ruotano così i due abbonamenti si consumano **insieme**, non uno solo. |
+| ⚖️ | **Balancer load-aware** | I ruoli ruotano così i due abbonamenti si consumano **insieme**, non uno solo. Il conto è **condiviso fra i progetti** (la quota è dell'account) e un rate-limit reale viene ricordato anche per i run successivi. |
 | 💾 | **Resumability** | Stato per-unità salvato dopo ogni unità: un run interrotto **riprende** da dove era. |
 | ◇ | **Quality** | Reflection (auto-critica) + evaluator-optimizer cross-provider, loop cap 2 poi escalation. |
 | 🧩 | **Fan-out per-issue** | `developer` e `reviewer` si espandono per issue, con ordinamento a dipendenze. |
@@ -91,6 +91,7 @@ mentis status --project ~/dev/todo
 | `mvp "<descrizione>"` | Sito statico (mvp-builder) |
 | `doctor` | Manutenzione della mappa modelli |
 | `status` | Carico per provider, finestre, stato unità, log |
+| `balance` | Quota consumata, **condivisa fra tutti i progetti** (`--reset`, `--add`) |
 
 **Flag principali:** `--project DIR` (default: cartella corrente) · `--compare` (challenge multi-provider) · `--quality off\|reflect\|evaluate\|full` · `--parallel` · `--fresh` (ignora lo stato) · `--dry-run`.
 
@@ -117,14 +118,32 @@ python3 orchestrator/mentis.py status --project ~/dev/todo
 
 ## Stato attuale: DRY-RUN
 
-> ⚠️ **Stato onesto.** La logica di mentis è coperta da una **suite di test** (`tests/`, stdlib `unittest` — esegui `python3 -m unittest discover -s tests`) e validata in dry-run. Ma mentis **non ha mai eseguito una chiamata reale** (nessun abbonamento attivo: entrambi i provider sono `enabled = false`): in dry-run stampa **il piano** senza eseguire nulla. Un review tecnico esterno ha fatto emergere bug di integrazione (crash sullo schema DEPS, timing del fan-out, verifica output, rate-limit): i **bloccanti sono corretti**, ed è stato aggiunto un **contratto di esito strutturato** (`done|needs_input|failed`) con **HITL riprendibile**. Il debito residuo — corpi degli agenti ancora Claude-oriented dietro un adapter di prosa — è tracciato in `DESIGN.md §13`.
+> ⚠️ **Stato onesto.** La logica di mentis è coperta da una **suite di test** (`tests/`, stdlib `unittest` — esegui `python3 -m unittest discover -s tests`), validata in dry-run e **esercitata end-to-end contro provider finti**: una `build` completa (BAD → TAD → IPD → fan-out per-issue → qa → review cross-provider → docs), il resume, e `--parallel` con worktree isolati girano davvero, scrivendo artefatti veri su un repo git vero. Ma mentis **non ha mai parlato con una CLI reale** (nessun abbonamento attivo: entrambi i provider sono `enabled = false`).
+>
+> Due review avversariali (una esterna, luglio 2026; un audit pre-primo-run, agosto 2026) hanno fatto emergere bug di integrazione mai esercitata. I **bloccanti sono corretti** — fra gli altri: schema DEPS canonico, fan-out lazy dopo il planner, contratto di esito `done|needs_input|failed` con HITL riprendibile, **resume che non si auto-invalida più**, riconoscimento del rate-limit reale, integrazione dei branch paralleli, percorsi degradati senza remote/CI. Ciò che **resta aperto** è tutto e solo quello che richiede le CLI vere: i flag delle righe `cmd`, gli id dei modelli, e la calibrazione delle finestre del balancer.
 
 ### Attivare un provider
 
+> 📋 **I punti aperti per il primo run sono raccolti in [FIRST_RUN.md](FIRST_RUN.md)** —
+> checklist ordinata di ciò che va verificato con le CLI in mano (flag, permessi,
+> conteggio token) e di ciò che si tara solo dopo, sui dati veri.
+
 1. Installa e fai **login con l'abbonamento** alla CLI (non una API key): `claude` (Pro/Max) e/o `codex` (ChatGPT Plus/Pro).
 2. In `config/mentis.toml` metti `enabled = true` sul provider.
-3. **Verifica i flag** nella riga `cmd` con `claude --help` / `codex --help` (cambiano spesso) — è l'unica cosa da ritoccare.
-4. Rilancia senza `--dry-run`.
+3. **Correggi la riga `cmd`** con i flag reali (`claude --help` / `codex --help`). ⚠️ Le due righe attuali **non sono state verificate su CLI reali** e quasi certamente vanno cambiate — i punti noti sono elencati nei commenti del toml. In particolare serve verificare: che l'agente possa **eseguire comandi** (git commit, install, test) e non solo scrivere file; quali valori accetta `--model`; per codex, i flag di sandbox/rete e `--skip-git-repo-check`.
+4. Rilancia senza `--dry-run`. Un **preflight** blocca il run (senza spendere quota) se il binario non è nel PATH o il template contiene segnaposti non supportati.
+
+### Il primo run, senza bruciare la quota
+
+Una `build` da 10 issue coi default può generare **decine di sessioni CLI**. Per il primo giro:
+
+```bash
+mentis bad "..."  --project ~/dev/prova --quality off     # 1 sola chiamata: verifica contratto e artefatto
+mentis tad "..."  --project ~/dev/prova --compare         # il pilota del confronto fra provider
+mentis build "..." --project ~/dev/prova --quality reflect # progetto piccolo, 2-3 issue, SENZA --parallel
+```
+
+Dopo ogni run guarda `.mentis/logs/calls.jsonl` e `mentis status`: è lì che trovi i numeri veri per tarare `[balance.window]` e i timeout.
 
 ---
 
