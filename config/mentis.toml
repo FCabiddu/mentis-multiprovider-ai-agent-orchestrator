@@ -28,11 +28,22 @@ routing = "balanced"
 # ----------------------------------------------------------------------------
 #  PROVIDER
 #  cmd = template di invocazione headless della CLI. Segnaposti sostituiti
-#  dall'orchestratore: {prompt} {model} {reasoning} {workdir}.
+#  dall'orchestratore: {prompt} {model} {reasoning}. (NON esiste {workdir}: la
+#  working dir si passa a subprocess, non nel template.)
 #
-#  ⚠️  I FLAG ESATTI VANNO CONFERMATI QUANDO INSTALLI LE CLI (cambiano spesso).
-#      La forma è corretta; verifica i nomi di flag con `claude --help` /
-#      `codex --help` e aggiorna solo queste due righe.
+#  ⛔ LE DUE RIGHE `cmd` QUI SOTTO NON SONO ANCORA STATE VERIFICATE SU CLI REALI.
+#     Prima del primo run vanno confrontate con `claude --help` / `codex --help`.
+#     Punti noti da controllare (audit 2026-08-01):
+#       • claude: `--permission-mode acceptEdits` NON basta in headless perché
+#         l'agente possa eseguire comandi (git commit, install, test). Senza i
+#         permessi giusti scrive file ma non committa né testa nulla.
+#       • claude: i valori accettati da `--model` sono alias (`opus`/`sonnet`/
+#         `haiku`) o id completi, NON "opus-4-8"/"haiku-4-5" → vedi [model_map].
+#       • codex: `--reasoning` con ogni probabilità non esiste (si passa via
+#         `-c model_reasoning_effort=...`); servono inoltre i flag di sandbox
+#         (default = read-only, rete spenta) e `--skip-git-repo-check`.
+#     `mentis` fa un preflight (binario nel PATH + segnaposti validi) prima di
+#     spendere quota, ma NON può validare i flag: quello è un `--help` a mano.
 #
 #  enabled = false → provider cablato ma spento (nessun abbonamento attivo).
 #  auth    = come ci si autentica: entrambe con abbonamento, NON con API key.
@@ -42,6 +53,13 @@ routing = "balanced"
 enabled = false                       # metti true dopo il login con Pro/Max
 auth    = "subscription"              # Claude Pro/Max — non API key
 cmd     = "claude -p {prompt} --model {model} --permission-mode acceptEdits"
+# usage_json: la CLI restituisce un envelope JSON con il CONTEGGIO TOKEN reale?
+#   claude → `--output-format json` dà {result, usage:{input_tokens,output_tokens}, total_cost_usd}
+#   codex  → `--json` dà un JSONL con eventi `token_count` (totali cumulativi)
+# Con true, mentis conta i token VERI invece di stimarli dai pesi: le percentuali
+# di quota diventano attendibili. Richiede il flag corrispondente nel `cmd` qui
+# sopra — quindi resta false finché non l'hai verificato con la CLI installata.
+usage_json = false
 # comando per elencare i modelli disponibili (usato da `mentis.py doctor`).
 # ⚠️ VERIFICA il flag reale con `claude --help`. Vuoto = doctor non può
 # interrogare la CLI, gli passi la lista a mano con --models.
@@ -55,6 +73,7 @@ enabled = false                       # metti true dopo il login con ChatGPT Plu
 auth    = "subscription"              # account ChatGPT — non API key
 cmd     = "codex exec {prompt} --model {model} --reasoning {reasoning}"
 list_models_cmd = ""                  # es. "codex --list-models" — VERIFICA con `codex --help`
+usage_json = false                    # vedi la nota sopra: con `--json` nel cmd, metti true
 
 # ----------------------------------------------------------------------------
 #  TIER_KEYWORDS — parola che lega un tier al nome del modello, per il `doctor`.
@@ -78,10 +97,15 @@ fast     = "luna"
 #  reale del provider su cui sta girando.
 # ----------------------------------------------------------------------------
 
+# Claude Code accetta come --model gli ALIAS (opus/sonnet/haiku, sempre validi e
+# stabili fra le release) oppure gli id completi (claude-opus-5, claude-opus-4-8,
+# claude-sonnet-5, claude-haiku-4-5). I vecchi valori "opus-4-8"/"haiku-4-5" NON
+# erano né l'uno né l'altro. Gli alias sono la scelta più sicura; passa agli id
+# completi se vuoi pinnare una versione precisa (e allora `doctor` può gestirli).
 [model_map.claude]
-frontier = "opus-4-8"
+frontier = "opus"
 balanced = "sonnet"
-fast     = "haiku-4-5"
+fast     = "haiku"
 
 [model_map.codex]
 frontier = "gpt-5.6-sol"
@@ -165,6 +189,17 @@ steps = ["mvp-builder"]
 retry_budget         = 6      # tentativi di fallback TOTALI per run, poi stop+escalation
 backoff_seconds      = 2      # attesa prima di un retry su errore transitorio
 circuit_open_for_run = true   # un provider rate-limited resta escluso per il resto del run
+# Timeout per chiamata, in secondi. Due valori: gli step che IMPLEMENTANO (developer,
+# qa, devops, mvp) scrivono codice, installano dipendenze ed eseguono test — durano
+# molto più di quelli documentali. Su timeout mentis NON ritenta da capo (il progetto
+# resterebbe a metà e costerebbe un'altra unità di quota): scala a te.
+timeout_seconds             = 1800   # 30 min — business-analyst, tech-architect, planner, reviewer, docs
+timeout_implementing_seconds = 5400  # 90 min — developer / qa-engineer / devops-engineer / mvp-builder
+# Tetto di sicurezza sul numero di sessioni CLI di UN run. Una build da 10 issue
+# coi default ne genera facilmente 40 (peggio con loop e retry): su abbonamento
+# è un'ora di quota. Raggiunto il tetto il run si ferma e scala a te; lo stato è
+# salvato, quindi si riprende con un rilancio. 0 = nessun tetto.
+max_calls_per_run = 60
 
 # ----------------------------------------------------------------------------
 #  BALANCE — router load-aware (routing = "balanced"). Vedi DESIGN §11.
@@ -176,8 +211,21 @@ circuit_open_for_run = true   # un provider rate-limited resta escluso per il re
 [balance.weights]             # costo relativo per tipo di operazione (generare = caro)
 implement = 1.0               # generare l'artefatto
 optimize  = 1.0               # revisione dopo bocciatura (riscrive l'artefatto)
+review    = 1.0               # code review: manda il corpo agente INTERO + il diff.
+                              # Misurato: è il prompt più grosso della pipeline
+                              # (~18k char, 2.6× un developer). Contarlo come
+                              # `evaluate` (0.3) lo sottostimava di ~3×.
 reflect   = 0.5               # auto-critica (a volte riscrive)
-evaluate  = 0.3               # critica breve (verdetto + problemi)
+evaluate  = 0.3               # critica breve del quality gate (prompt ~1k char)
+
+# Moltiplicatore per TIER del modello. Su abbonamento una chiamata frontier pesa
+# molto più di una balanced: contarle uguali (com'era prima) sballa il conto
+# proprio dove il costo è alto. Valori di partenza da ricalibrare col primo run
+# reale leggendo chars_in/chars_out da .mentis/logs/calls.jsonl.
+[balance.tier]
+frontier = 3.0
+balanced = 1.0
+fast     = 0.4
 
 [balance.window]              # ore prima che la quota di un provider si SBLOCCHI (reset del contatore)
                               # ⚠️ STIMA — calibra dopo il primo run reale osservando i limiti veri
