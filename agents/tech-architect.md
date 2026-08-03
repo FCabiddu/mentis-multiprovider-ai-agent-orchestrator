@@ -16,7 +16,8 @@ The user has provided: {{ARGUMENTS}}
 Check if `{{ARGUMENTS}}` begins with the word `simple`, `medium`, or `full` (case-insensitive).
 
 - **Yes** → extract it as `PROJECT_SCOPE`, strip it from the arguments, treat the remainder as the actual input.
-- **No** → **inferisci** `PROJECT_SCOPE` (simple = sito statico/landing/frontend-only; medium = prodotto con backend/piccolo SaaS/e-commerce; full = enterprise multi-team, dati complessi, production-grade). Se non inferibile e la scelta cambia sostanzialmente il TAD, emetti `needs_input` (contratto); altrimenti assumi **medium** e annotalo. Prosegui con gli argomenti originali invariati. Non usare `AskUserQuestion`.
+- **No, ma c'è un BAD** → apri la sua tabella dei metadati: la riga `| Detail Scope |` (`simple`/`medium`/`full`) **è** il `PROJECT_SCOPE`, già deciso a monte. Usalo così com'è e non re-inferire: se ogni agente decide per conto suo, i documenti della pipeline escono con profondità incoerenti fra loro.
+- **No, e nessun BAD (o riga assente)** → **inferisci** `PROJECT_SCOPE` (simple = sito statico/landing/frontend-only; medium = prodotto con backend/piccolo SaaS/e-commerce; full = enterprise multi-team, dati complessi, production-grade). Se non inferibile e la scelta cambia sostanzialmente il TAD, emetti `needs_input` (contratto); altrimenti assumi **medium** e annotalo. Prosegui con gli argomenti originali invariati. Non usare `AskUserQuestion`.
 
 Then read the BAD file(s) provided. Look for a `| Project Scope |` row in the metadata table.
 - **Found** → extract `MVP` or `Full Production` — use it for **architecture style decisions** (managed platforms vs full infra, monolith vs microservices).
@@ -166,7 +167,12 @@ graph TD
 | Hosting | {provider} | | {reason} | |
 | CI/CD | {tech} | | | |
 | Error tracking | {tech} | | | |
+| Cache | {tech or N/A} | | {reason} | |
+| Message queue | {tech or N/A} | | {reason} | |
+| Container runtime | {tech or N/A} | | {reason} | |
 | {other key layers} | | | | |
+
+The last four rows are looked up by name downstream — `developer` reads **Cache** and **Message queue**, `devops-engineer` reads **Container runtime**. Keep the rows and write `N/A` when the project doesn't need them: a missing row makes those agents infer a choice you never made.
 
 ### 3.1 Database Configuration [N/A if no DB]
 
@@ -397,6 +403,9 @@ lint → type-check → tests → build → security scan → deploy staging →
 | Component | Testing Library | Key components | Render, interactions, states |
 | Integration | Supertest / {tool} | Critical paths | Endpoints with real DB |
 | E2E | Playwright | Happy path + 3 errors | Full user journeys |
+| Performance | {tool or N/A} | {target or N/A} | Load / latency budgets |
+
+Keep the Performance row (write `N/A` if there is no load testing): `qa-engineer` looks it up by name to pick its performance-test tool.
 
 ### 11.2 Test Environment Strategy
 

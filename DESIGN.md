@@ -29,7 +29,7 @@ termini e fragile — **non** lo facciamo. Solo CLI ufficiali.
 2. leggere il risultato (output + file scritti su disco);
 3. decidere il prossimo passo (fallback / confronto / review incrociata).
 
-I **tool** (leggere/scrivere file, eseguire comandi) li porta **ogni CLII**: non
+I **tool** (leggere/scrivere file, eseguire comandi) li porta **ogni CLI**: non
 li reimplementa l'orchestratore. Il **passaggio di consegne tra agenti** avviene
 via **file su disco** nel progetto (il BAD in `business-analysis/`, il TAD in
 `tech-analysis/`, …): un artefatto su disco è neutro, non importa quale modello
@@ -81,11 +81,18 @@ frontmatter dell'agente — nient'altro dipende da questi valori.
 **Asse 1 — tier → modello:**
 
 ```
-tier        claude       codex (gpt-5.6)
-frontier →  opus-4-8   | gpt-5.6-sol
-balanced →  sonnet     | gpt-5.6-terra
-fast     →  haiku-4-5  | gpt-5.6-luna
+tier        claude     codex (gpt-5.6)
+frontier →  opus     | gpt-5.6-sol
+balanced →  sonnet   | gpt-5.6-terra
+fast     →  haiku    | gpt-5.6-luna
 ```
+
+Lato Claude si usano gli **alias** della CLI (`opus`/`sonnet`/`haiku`): sono i
+valori che `--model` accetta sempre, stabili fra le release. Gli id completi
+(`claude-opus-5`, `claude-opus-4-8`, …) vanno bene se si vuole pinnare una
+versione precisa — ed è la forma su cui `doctor` sa ragionare, perché confronta
+i numeri di versione. I valori precedenti (`opus-4-8`, `haiku-4-5`) non erano
+né alias né id validi: l'audit di agosto li ha corretti.
 
 **Asse 2 — reasoning → meccanismo del provider:**
 
@@ -114,7 +121,16 @@ mappe. Gli agenti non si toccano mai.
 `mode = "fallback"`: si prova il provider in cima a `preference`; se la CLI
 ritorna un errore che matcha i pattern di rate-limit
 (`rate limit`, `quota`, `429`, `overloaded`, …) si passa al successivo con lo
-**stesso identico prompt**. È lo switch "quando Claude si esaurisce" richiesto.
+**stesso prompt**, arricchito dalla nota di handoff su disco (chi subentra riparte da
+lì: il contesto durevole si preserva, l'effimero no — §10). È lo switch "quando
+Claude si esaurisce" richiesto.
+
+Il **riconoscimento** del limite è deliberatamente conservativo: si considera
+rate-limit solo una CLI che è **fallita** (rc≠0) e il cui output contiene una delle
+formule note (`rate limit`, `quota`, `usage limit`, `spend limit`, `429`, …). Il
+vincolo su rc≠0 basta a escludere il falso positivo classico — un TAD che *parla* di
+"429" — senza doversi limitare a stderr: le CLI a subscription scrivono il messaggio
+di limite su entrambi i canali.
 
 ## 6. Confronto / challenge
 
@@ -133,8 +149,8 @@ della review è un secondo parere **indipendente**.
 Meccanismo:
 
 - Ogni step che produce codice (`developer`, `devops-engineer`, `qa-engineer`,
-  `mvp-builder`) viene registrato in `.mentis/ledger.json` nel progetto con il
-  provider che l'ha eseguito.
+  `mvp-builder`) viene registrato in `.mentis/state.json` nel progetto con il
+  provider che l'ha eseguito (il vecchio `ledger.json` non esiste più: §10).
 - Quando arriva il reviewer, l'orchestratore legge l'ultimo implementer e sceglie
   per il reviewer un provider **diverso** (`pick_provider`). Con 2 provider è
   deterministico: implementa Claude → rivede Codex, e viceversa.
@@ -207,6 +223,7 @@ extra brucia budget di rate-limit spingendo prima nel fallback.
 | devops-engineer | `reflect` | verificabile dalla CI |
 | documentation-agent | `reflect` | ultimo step, non propaga |
 | reviewer | `off` | è LUI l'evaluator del codice — non si valuta l'evaluator |
+| mvp-builder | `reflect` | output verificabile guardandolo; nessuno step a valle |
 
 `--quality full` forza tutto in alto (run paranoico); `off` disattiva (bozza).
 
@@ -295,8 +312,33 @@ basso; l'**evaluator** = il più scarico tra gli ALTRI (anti-bias sempre rispett
 I ruoli ruotano per leapfrog e i due budget si esauriscono **insieme** →
 massimo numero di artefatti prima di uno stop.
 
-**Pesi** (`[balance.weights]`, si auto-correggono per leapfrog, i valori esatti
-contano poco): implement 1.0, optimize 1.0, reflect 0.5, evaluate 0.3.
+**Pesi** (`[balance.weights]`): implement 1.0, optimize 1.0, **review 1.0**,
+reflect 0.5, evaluate 0.3 — moltiplicati per il **tier** del modello
+(`[balance.tier]`: frontier 3.0, balanced 1.0, fast 0.4).
+
+I due fattori sono stati corretti misurando un run completo (§14):
+
+- **Il reviewer valeva 0.3 e non doveva.** Il suo prompt è il più grosso della
+  pipeline (~18k caratteri: corpo agente intero + diff, 2,6× un developer), ma
+  cadeva sotto `evaluate`, la voce pensata per la critica breve del quality gate
+  (~1k caratteri). Ora ha una voce sua, `review`.
+- **Il tier non contava niente.** `business-analyst` su frontier e `developer` su
+  balanced pesavano uguale, mentre su abbonamento una chiamata frontier consuma
+  molto di più: il conteggio sbagliava proprio dove il costo è alto.
+
+Effetto misurato sullo stesso run: lo scarto fra la quota di lavoro *stimata* dal
+balancer e quella *osservata* nei log scende da 3,9 a 2,8 punti percentuali.
+
+**I valori restano stime, ed è dichiarato.** `mentis status` mostra affiancate la
+colonna `[STIMA]` (il costo pesato) e `[OSSERVATO]` (chiamate e caratteri reali
+da `calls.jsonl`): se divergono, si ricalibrano i pesi sui dati veri invece di
+indovinare.
+
+**Cosa viene addebitato.** Non solo le chiamate riuscite: un **timeout** ha
+consumato quanto una riuscita (spesso di più) e un errore transitorio ha comunque
+fatto partire la richiesta — se non li si addebita, il provider che ha appena
+bruciato 90 minuti risulta il più scarico e il balancer gli manda altro lavoro.
+Un **rate-limit** invece è respinto alla porta e non si paga.
 
 **Reset a finestra, non decadimento.** Le quote a subscription non calano piano:
 si **sbloccano a scatti ogni N ore**. Quindi il costo è cumulativo DENTRO la
@@ -316,9 +358,95 @@ ruoli → resta solo l'altro → scatta il degrado+escalation dell'evaluator (gi
 gestito). Anti-bias: intatto. Pin per-agente: non necessari (l'utente non ha
 preferenze su chi guida).
 
-**v2 (non fatto):** pesare anche per tier (frontier costa più di balanced);
-auto-calibrare i pesi dalle dimensioni reali osservate (serve il contatore di
-chiamate/log); rilevare il reset di finestra empiricamente (429→successo).
+### Il conto è dell'account, non del progetto
+
+Il contatore stava in `{progetto}/.mentis/state.json`: ogni nuovo progetto
+ripartiva da zero mentre la quota vera era già stata spesa altrove. Ora il
+consumo si accumula in **`~/.mentis/balance.json`** (override con `MENTIS_HOME`),
+condiviso da tutti i progetti, con `flock` perché due run possono girare insieme.
+Nel `state.json` resta un totale **per progetto**, ma solo informativo: "quanto è
+costato questo progetto". I progetti che avevano già un contatore vengono
+travasati una volta sola (`migrate_project_budget`).
+
+Verificato: due `bad` di fila su progetti diversi → il primo consuma claude, il
+secondo **vede claude già carico e instrada su codex**. Prima ripartiva da zero e
+ricaricava lo stesso provider.
+
+### Il rate-limit è l'unico dato certo — e va ricordato
+
+Resta il consumo che avviene **fuori** da mentis: una sessione interattiva di
+Claude Code, claude.ai. Nessuna CLI a subscription espone la quota residua (è il
+motivo stesso per cui il progetto usa le CLI e non le API), quindi non c'è modo
+di leggerla.
+
+Ma un rate-limit vero *è* la misura: in quel momento sai per certo che la quota è
+finita, qualunque cosa dicesse la stima. Prima quell'informazione veniva usata
+solo per il run corrente (circuit breaker) e poi buttata. Ora `mark_exhausted` la
+scrive nel bilancio condiviso, e ogni run successivo — anche in un altro progetto
+— **parte già escludendo quel provider** fino alla ricarica stimata. Se risultano
+esauriti tutti, mentis non parte affatto invece di sprecare tentativi.
+
+Il comando `mentis balance` mostra il conto, lo azzera (`--reset`, quando sai che
+la quota è tornata) e permette di registrare a mano un consumo esterno
+(`--add claude=5`). Quest'ultimo è una scorciatoia, non il meccanismo: la
+contabilità a mano non la tiene aggiornata nessuno, mentre il rate-limit si
+registra da solo. `--reset` azzera il **consumo** ma conserva la **calibrazione**:
+il tetto è conoscenza acquisita, non stato del run.
+
+### "Quanti token mi restano?" — la risposta onesta
+
+Nessuna delle due CLI espone la quota residua in modo programmatico: `/usage` in
+Claude Code e `/status` in Codex esistono **solo in interattivo** (ci sono issue
+aperte per una versione headless). Quindi la domanda "che percentuale mi resta"
+non ha una risposta diretta, e mentis non deve fingere di averla.
+
+Quello che le CLI danno è il **consumo effettivo per chiamata**:
+
+| CLI | Flag | Cosa restituisce |
+|---|---|---|
+| Claude Code | `--output-format json` | `usage.input_tokens`, `usage.output_tokens`, `total_cost_usd` |
+| Codex | `--json` | JSONL di eventi; `token_count` porta i totali cumulativi |
+
+Con `usage_json = true` sul provider, mentis legge quei numeri
+(`parse_usage_envelope`) e conta i **token veri** invece di stimarli dai pesi.
+Verificato in simulazione contro una quota nota: il conteggio coincide
+esattamente con la verità (13.587 e 15.154 token, zero scarto).
+
+Il **denominatore** invece si può solo imparare: quando arriva un rate-limit
+vero, i token consumati fino a quel momento *sono* il tetto. Da lì in poi
+`mentis balance` mostra una percentuale reale. Nella simulazione lo scarto
+rispetto alla verità è di 5–9 punti, sempre **per eccesso** — mentis crede di
+aver consumato più di quanto abbia davvero, perché il tetto osservato esclude la
+chiamata rifiutata. Per un meccanismo di sicurezza è la direzione giusta: prudente,
+non temerario. Finché il muro non è mai stato toccato, `balance` dice
+**«quota usata: IGNOTA»** invece di inventare un numero.
+
+### Il consumo fuori da mentis: risolto per la CLI
+
+Restava un buco dichiarato come vincolo: la quota consumata dalle sessioni
+interattive. Non lo era. Claude Code registra **ogni** messaggio in
+`~/.claude/projects/**/*.jsonl` con il blocco `usage` completo, e quelle
+trascrizioni includono tutto ciò che passa dalla CLI — le sessioni che apri tu e
+le chiamate headless di mentis.
+
+`usage_scan` (attivo di default su Claude) le legge e le somma con la stessa
+formula pesata usata ovunque (`weighted_tokens`: cache-read 0,1×, cache-write
+1,25×). Quando è attiva **sostituisce** il contatore interno invece di sommarsi:
+le chiamate di mentis sono già dentro le trascrizioni, e sommarle le conterebbe
+due volte. Una cache di 60 secondi evita di riscansionare a ogni unità.
+
+Quanto pesa davvero: misurato su questa macchina, **43 milioni di token pesati in
+una finestra di 5 ore**, quasi tutti da sessioni interattive. Senza la scansione
+mentis sarebbe partito convinto che la quota fosse intatta.
+
+Resta fuori solo ciò che non passa dalla CLI: **claude.ai nel browser**. E Codex,
+per cui non è stato verificato un equivalente locale — lì il conteggio resta
+quello delle sole chiamate di mentis.
+
+**v2 (non fatto):** auto-calibrare i pesi dalle dimensioni reali osservate (ora
+il dato c'è: `chars_in`/`chars_out` in `calls.jsonl`, e `mentis status` lo mostra
+accanto alla stima); stimare la ricarica dall'osservazione (429→successo) invece
+che dalle ore di `[balance.window]`.
 
 ## 12. Osservabilità, robustezza, parallelismo (IMPLEMENTATO)
 
@@ -393,7 +521,7 @@ orchestratore e agenti era prosa, non un'interfaccia*. **Bloccanti corretti:**
   con headless).
 - **Resume dependency-aware** — `input_hash` include `upstream_hash` (BAD/TAD/IPD):
   un artefatto a monte cambiato invalida i downstream `done`.
-- **Suite di test** — `tests/test_mentis.py` (stdlib `unittest`, 20 test): parser
+- **Suite di test** — `tests/test_mentis.py` (stdlib `unittest`): parser
   TOML, `load_issues` (canonico/legacy/garbage/anti-crash), balancer, verdict,
   result, toposort, waves, no-shell-injection, flusso HITL.
 
@@ -433,12 +561,157 @@ giustificato ora.
 (cosmetico). Poi i v2 (balancer avanzato, terzo provider, preflight auth) — da
 tarare col primo run reale.
 
-## 14. Cosa resta da fare quando attivi gli abbonamenti
+## 14. Audit pre-primo-run (2026-08-01) — cosa è cambiato
+
+Secondo giro avversariale, questa volta mirato all'imminenza del primo run reale:
+sei lenti indipendenti sul codice attuale più un regression-check voce-per-voce
+della review esterna di luglio. Il nucleo di design ha retto; a rompersi erano
+il **ciclo di vita di un run vero** e il **contatto con le CLI** — cioè
+esattamente ciò che il dry-run non poteva esercitare.
+
+### I difetti che avrebbero rotto il primo run (corretti)
+
+- **Il resume si auto-invalidava.** `upstream_hash` includeva *tutti* gli
+  artefatti, quindi anche l'output dello step stesso: al rilancio ogni unità
+  `done` risultava "cambiata da sé stessa" e l'intera pipeline si rifaceva da
+  capo, ribruciando la quota. Il fix (`UPSTREAM_DIRS`) hasha solo ciò che sta
+  **davvero a monte** — l'invariante è che uno step non può dipendere dal
+  proprio output né dai suoi downstream. È il fix più importante del giro: il
+  precedente hardening aveva risolto il problema opposto (non invalidare mai)
+  trasformandolo nel suo eccesso.
+- **Il rate-limit reale non veniva riconosciuto.** I pattern coprivano il
+  lessico API (`429`, `quota`) ma non le formule delle CLI a subscription
+  ("You've hit your monthly spend limit", "usage limit reached"), e il match
+  girava solo su stderr. Conseguenza: limite letto come errore transitorio →
+  retry sullo stesso provider esaurito → `retry_budget` finito → STOP, invece
+  del fallback all'altro provider. Ora: rc≠0 **e** pattern su stdout+stderr.
+- **Con un solo provider la pipeline si fermava alla prima unità.** La policy
+  `[review].on_no_alternative = "warn"` era onorata solo da `pick_provider`,
+  morto per questi percorsi: `evaluator_loop` e `reviewer_loop` escalavano
+  sempre. Con `business-analyst = evaluate` nel profilo di default, un solo
+  abbonamento attivo significava zero pipeline. Ora `warn` degrada e prosegue
+  marcando l'esito `approved-not-independent` (mai un'approvazione silenziosa).
+- **Il codice implementato spariva per gli step a valle.** In `--parallel` i
+  branch `mentis/*` non venivano mai integrati: qa, reviewer e docs giravano su
+  un albero che non conteneva il lavoro. Ora, a unità riuscita, l'orchestratore
+  li integra (`merge_unit_branch`, con abort+avviso sul conflitto).
+- **`remove_worktree --force` distruggeva il lavoro non committato** mentre
+  l'unità veniva marcata `done`. Ora quel lavoro viene committato sul branch
+  prima del cleanup.
+- **`produced_output` era di nuovo sempre vero**: `ensure_gitignore` sporca il
+  `.gitignore` a inizio run, quindi il tree risultava "modificato" per tutto il
+  run. Ora c'è una baseline pre-unità e `.gitignore` è escluso; l'artefatto
+  atteso vale solo se **scritto da questa unità** (non se residuo di un run
+  precedente).
+- **CLI assente = crash secco** (`FileNotFoundError` non gestita). Ora è un
+  errore di configurazione: provider escluso, nessun budget bruciato — e un
+  **preflight** lo intercetta prima ancora di partire.
+- **Il retry riuscito perdeva l'output**, e con esso il contratto
+  `[[MENTIS-RESULT]]`: un `needs_input` diventava un `done` silenzioso.
+- **`mentis review` a sé stante**: crashava (`KeyError` su implementer ignoto) e
+  faceva fan-out su tutte le issue del DEPS — N review per una sola PR.
+- **Timeout**: unico e non documentato, e su timeout si ritentava da capo su un
+  progetto già mezzo modificato. Ora è configurabile, più alto per gli step
+  implementanti, e un timeout **scala all'utente** invece di ritentare.
+
+### Il debito di contratto verso gli agenti (chiuso)
+
+- **`Branch:` non veniva mai passato** benché developer/devops lo pretendessero,
+  e i loro corpi ordinavano `git checkout main && git pull origin main` — che in
+  un worktree fallisce e in sequenziale nasconde il lavoro della issue
+  precedente. Ora l'orchestratore passa `Branch:` e un blocco
+  `[mentis — contesto reale del repo]` che dichiara cosa il repo supporta
+  davvero; i corpi sono stati riscritti di conseguenza.
+- **Nessun percorso degradato senza remote/gh/CI.** Un progetto locale — il caso
+  normale di un primo run — faceva fallire push e `gh pr create`, e il reviewer,
+  che tratta la CI assente come rossa, bocciava ogni issue: loop di rework fino
+  al cap, quota bruciata, escalation ovunque. Ora developer, devops, qa e
+  reviewer hanno un ramo esplicito "niente remote → consegna su branch locale" e
+  il reviewer ha un **LOCAL MODE** che valuta il diff. Regola nuova e netta:
+  *l'infrastruttura mancante non è mai motivo di NEEDS WORK*.
+- **Il reviewer non chiudeva con la riga `VERDICT`** che l'orchestratore legge, e
+  il suo template conteneva entrambi i token — quindi il parser cadeva
+  nell'ambiguo (= NEEDS WORK conservativo) e innescava rework inutili. Ora lo
+  Step 6 impone la riga finale, unica e ultima. In più `parse_verdict` prende
+  l'**ultimo** match, non il primo: le nostre stesse istruzioni contengono
+  `VERDICT: APPROVED` come esempio.
+- **La board `tasks/` era consumata da tre agenti e prodotta da nessuno.** Ora la
+  scrive il planner (Step 6a/6b), con il formato che developer, qa e reviewer
+  parsano davvero. Nello stesso passaggio sono spariti fisicamente i sotto-passi
+  Linear `6a–6d` (145 righe di codice morto che ordinavano MCP e
+  `AskUserQuestion`: l'ultima prosa capace di far deragliare un agente).
+- **Auto-merge letto da `/tmp/{repo}-automerge`**, path prevedibile e scrivibile
+  da qualsiasi processo locale → spostato in `.mentis/automerge`, dentro il
+  progetto.
+
+### Controllo di spesa
+
+Il tetto vero non è per-provider ma **per run**: `[reliability].max_calls_per_run`
+(default 60) conta le sessioni CLI effettivamente eseguite e ferma il run quando
+lo supera — lo stato è salvato, quindi si riprende con un rilancio. È la rete di
+sicurezza contro il caso in cui fan-out × quality × retry × loop si moltiplicano
+su un abbonamento: prima di questo, l'unico limite era il `retry_budget`, che
+conta solo i *fallimenti*.
+
+### Altro
+
+Ambiente dei sottoprocessi ripulito dalle variabili `*_API_KEY` (il vincolo è
+*solo* abbonamento: una chiave nel profilo farebbe fatturare a consumo);
+`charge()` non addebita più in dry-run (il primo run reale partiva con carichi
+fantasma nel balancer) ed è sotto lock; `--project` con path inesistente non
+crea più silenziosamente un progetto; `deps: null` nel DEPS non solleva più
+`TypeError`; `build_waves` include `devops-engineer` (una issue DevOps in mezzo
+spezzava ogni wave). Suite di test: **da 27 a 49 casi**, con i nuovi mirati ai
+percorsi che il primo run attraversa davvero.
+
+### Verifica: una `build` completa contro provider finti
+
+Oltre agli unit test, l'orchestratore è stato esercitato **end-to-end** con CLI
+finte che scrivono artefatti veri in un repo git vero: `build` completa (BAD →
+TAD → IPD → fan-out di 3 issue con routing per label → qa → review per-issue →
+docs) tutta `done`, review sempre su provider ≠ implementer, carichi finali
+allineati (claude 4.6 / codex 4.3); rilancio → **11 unità su 11 saltate**;
+`--parallel` → worktree isolati, branch integrati nel tree principale, cleanup
+pulito. È la prova che mancava: non "il piano è giusto", ma "il ciclo di vita di
+un run funziona".
+
+## 15. Cosa resta da fare quando attivi gli abbonamenti
+
+> La versione operativa di questa sezione — con checklist, comandi e cosa
+> fare della risposta — è in **[FIRST_RUN.md](FIRST_RUN.md)**. Qui resta il
+> perché; lì c'è il come.
+
+Tutto ciò che resta richiede le CLI vere: nessuno di questi punti è verificabile
+in dry-run.
 
 1. Installare le CLI e fare login con gli **abbonamenti**.
 2. `enabled = true` sui provider in `mentis.toml`.
-3. **Confermare i flag reali** nelle righe `cmd` (`--help` di ciascuna CLI):
-   è l'unico punto che dipende da dettagli che cambiano nel tempo. In
-   particolare: come Claude Code accetta il livello di thinking, e la sintassi
-   esatta di `codex exec`/`--reasoning`.
-4. Provare prima in dry-run, poi un `tad --compare` come pilota, infine `build`.
+3. **Correggere le righe `cmd`** (`--help` di ciascuna CLI). Punti noti, dai
+   commenti del toml: (a) per Claude, `--permission-mode acceptEdits` non basta
+   perché l'agente **esegua comandi** in headless — senza i permessi giusti
+   scrive file ma non committa né esegue i test, e metà pipeline diventa muta;
+   (b) i valori accettati da `--model` sono alias o id completi, non le stringhe
+   attuali di `[model_map]`; (c) per Codex, `--reasoning` con ogni probabilità
+   non esiste (si passa via `-c model_reasoning_effort=…`), la sandbox di default
+   è read-only con la rete spenta, e su cartelle non-git serve
+   `--skip-git-repo-check`.
+4. Verificare il **reasoning per Claude**: oggi è solo un suggerimento nel
+   prompt, e un `effortLevel` impostato globalmente nei settings dell'utente lo
+   sovrascriverebbe comunque.
+4bis. **Attivare il conteggio token reale**: aggiungere `--output-format json` al
+   `cmd` di Claude (e `--json` a quello di Codex) e mettere `usage_json = true`.
+   È ciò che trasforma il balancer da stima a misura — e senza cui le percentuali
+   di quota restano un ordine di grandezza. Verificare che il testo dell'agente
+   arrivi comunque: `parse_usage_envelope` estrae `result` dall'envelope, ma se il
+   formato reale differisse, mentis ripiega sull'output grezzo senza rompersi.
+5. Provare in quest'ordine: `bad --quality off` (una sola chiamata), poi
+   `tad --compare` come pilota, poi `build` su un progetto piccolo con
+   `--quality reflect` e **senza** `--parallel`.
+6. Solo allora tarare con i dati veri: `[balance.window]` (le ore di ricarica
+   sono una stima), i due timeout, e i pesi del balancer — leggendoli da
+   `.mentis/logs/calls.jsonl` e da `mentis status`.
+
+Un solo numero da tenere d'occhio dal primo giorno: **`max_calls_per_run`**
+(default 60). Se un run si ferma dicendo che ha raggiunto il tetto, guarda
+`calls.jsonl` prima di alzarlo — spesso il vero problema è un loop che non
+converge, non un tetto troppo basso.

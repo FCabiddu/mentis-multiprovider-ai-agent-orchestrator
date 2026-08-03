@@ -11,17 +11,18 @@ The user has provided: {{ARGUMENTS}}
 
 ---
 
-## Step 0a — Session auto-merge preference
+## Step 0a — Merge policy
 
-Before doing anything else, check whether a session preference has already been recorded. The preference file is scoped to the current repository:
+The merge into the main branch is **never** yours to make: it stays with the user. Default is **Manual approval** (`AUTO_MERGE=false`).
 
 ```bash
-AUTOMERGE_FILE="/tmp/$(basename "$(git rev-parse --show-toplevel)")-automerge"
-cat "$AUTOMERGE_FILE" 2>/dev/null || echo "missing"
+cat .mentis/automerge 2>/dev/null || echo "manual"
 ```
 
-- **If the file exists and contains `true` or `false`:** read its value silently. Set `AUTO_MERGE=true` or `AUTO_MERGE=false` for use in Step 6. Do **not** ask the user again.
-- **If the file is missing:** default to **Manual approval** — set `AUTO_MERGE=false`. Do NOT use `AskUserQuestion`: under mentis the merge decision belongs to the user, outside the pipeline.
+- Missing, unreadable, or anything other than `true` → `AUTO_MERGE=false`.
+- Exactly `true` → `AUTO_MERGE=true` (the user opted in for THIS project).
+
+The flag lives inside the project under `.mentis/` (gitignored), never in `/tmp`: a path in `/tmp` is predictable and writable by any local process, so a third party could switch auto-merge on for you. Do NOT use `AskUserQuestion` — under mentis there is no interactive channel.
 
 ---
 
@@ -291,18 +292,31 @@ Then move to the next task.
 
 Test files never go straight to `main`. After all selected tasks are marked Done, put the work on a dedicated branch and open a PR so CI runs and the work is backed up.
 
-Create the branch off the latest `main` (slug: `test/qa-suite-{YYYY-MM-DD}`), commit, push, and open the PR:
+Create the branch **from the current HEAD** — not from `main`: under mentis the code you are testing may live on the branch you are already on, and switching to `main` would leave you testing a tree without it. Commit first; push and open a PR only if this repository actually has a remote.
 
 ```bash
-git checkout main && git pull origin main
 git checkout -b test/qa-suite-$(date +%Y-%m-%d)
 git add .
 git commit -m "$(cat <<'EOF'
 test: implement QA test suite
 
-Co-Authored-By: Claude <noreply@anthropic.com>
+Signed-off-by: mentis
 EOF
 )"
+```
+
+Now check what is possible here (the `[mentis — contesto reale del repo]` block in your arguments already told you):
+
+```bash
+git remote                                    # empty → no remote
+command -v gh >/dev/null && gh auth status    # non-zero → gh unusable
+```
+
+**No remote or no `gh`** → stop after the commit. Report the branch name and commit SHA plus `no remote: delivered as a local branch`, and skip the rest of this step. This is a supported outcome, not a failure.
+
+**Remote and `gh` available** → push and open the PR:
+
+```bash
 git push -u origin test/qa-suite-$(date +%Y-%m-%d)
 gh pr create \
   --title "test: QA test suite" \

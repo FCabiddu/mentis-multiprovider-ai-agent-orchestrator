@@ -11,17 +11,18 @@ The user has provided: {{ARGUMENTS}}
 
 ---
 
-## Step 0a — Session auto-merge preference
+## Step 0a — Merge policy
 
-Before doing anything else, check whether a session preference has already been recorded. The preference file is scoped to the current repository:
+The merge into the main branch is **never** yours to make: it stays with the user. Default is **Manual approval** (`AUTO_MERGE=false`).
 
 ```bash
-AUTOMERGE_FILE="/tmp/$(basename "$(git rev-parse --show-toplevel)")-automerge"
-cat "$AUTOMERGE_FILE" 2>/dev/null || echo "missing"
+cat .mentis/automerge 2>/dev/null || echo "manual"
 ```
 
-- **If the file exists and contains `true` or `false`:** read its value silently. Set `AUTO_MERGE=true` or `AUTO_MERGE=false` for use in Step 5f. Do **not** ask the user again.
-- **If the file is missing:** default to **Manual approval** — set `AUTO_MERGE=false`. Do NOT use `AskUserQuestion`: under mentis the merge decision belongs to the user, outside the pipeline. (To opt into auto-merge, write `true` to `$AUTOMERGE_FILE` manually before running.)
+- Missing, unreadable, or anything other than `true` → `AUTO_MERGE=false`.
+- Exactly `true` → `AUTO_MERGE=true` (the user opted in for THIS project).
+
+The flag lives inside the project under `.mentis/` (gitignored), never in `/tmp`: a path in `/tmp` is predictable and writable by any local process, so a third party could switch auto-merge on for you. Do NOT use `AskUserQuestion` — under mentis there is no interactive channel.
 
 ---
 
@@ -133,19 +134,21 @@ If the project is empty, note that and proceed — establish patterns yourself f
 
 ---
 
-## Step 3.5 — Create working branch
+## Step 3.5 — Working branch
 
-Parse the branch name from arguments (`Branch: {branch-name}`). Check for "ALREADY EXISTS".
+The orchestrator always passes `Branch: {branch-name}` in your arguments, plus a `[mentis — contesto reale del repo]` block stating what this repository actually supports. **That block wins over anything in this section.**
 
-If branch does **not** exist:
+Check where you already are before touching branches:
+
 ```bash
-git checkout main && git pull origin main && git checkout -b {branch-name}
+git rev-parse --abbrev-ref HEAD    # the branch you are on right now
+git remote                          # empty output = NO remote: never push, never pull
 ```
 
-If "ALREADY EXISTS":
-```bash
-git checkout {branch-name} && git pull origin {branch-name}
-```
+- **Already on `{branch-name}`** (typical under `--parallel`: you are in an isolated worktree the orchestrator prepared for you) → do nothing. Never `git checkout main` here: `main` is checked out in another worktree and the command fails.
+- **Not on it, and it does not exist** → create it from the current HEAD: `git checkout -b {branch-name}`. Do **not** switch to `main` first — the previous issue's work may live on the branch you are on, and jumping to `main` would silently drop it.
+- **Not on it, and it exists** → `git checkout {branch-name}`.
+- **`git pull` / `git push` only if `git remote` printed something.** With no remote they fail; that is expected, not an error to work around.
 
 ---
 
@@ -249,23 +252,38 @@ sed -i.bak 's/\*\*Status:\*\* .*/\*\*Status:\*\* Done/' "$TASK_FILE" && rm -f "$
 
 ---
 
-### 5f — Commit, push, and open a PR (NO merge)
+### 5f — Commit, then (only if possible) push and open a PR — NEVER merge
 
-Commit and push your work. Before staging, run `git status --short` and confirm nothing is listed that must never be committed (`.env`, credentials, local scratch files) — add such files to `.gitignore` first if present:
+**Committing is mandatory and comes first.** Uncommitted work can be lost when the orchestrator cleans up an isolated worktree, and an uncommitted change does not count as delivered.
+
+Before staging, run `git status --short` and confirm nothing is listed that must never be committed (`.env`, credentials, local scratch files) — add such files to `.gitignore` first if present:
 
 ```bash
 git add -A
 git commit -m "$(cat <<'EOF'
 {issue_title}
 
-Linear: {issue_id}
-Co-Authored-By: Claude <noreply@anthropic.com>
+Issue: {issue_id}
+Signed-off-by: mentis
 EOF
 )"
+```
+
+**Now check what this repository can actually do** — the `[mentis — contesto reale del repo]` block in your arguments already tells you, and this confirms it:
+
+```bash
+git remote                                    # empty → no remote
+command -v gh >/dev/null && gh auth status    # non-zero → gh unusable
+```
+
+- **No remote, or `gh` unavailable/unauthenticated** → **stop here**. Do not push, do not open a PR, do not look for CI. This is a normal, supported situation (a local project), not a failure to work around. Record in your final report: branch name, commit SHA, and the explicit note `no remote: delivered as a local branch`. Then skip to Step 6.
+- **Remote and `gh` both available** → continue with the push and PR below.
+
+```bash
 git push -u origin {branch-name}
 ```
 
-**CI-fix mode** — if your arguments contain `CI Failure:` (you were spawned by the reviewer to fix a failing CI job):
+**CI-fix mode** — if your arguments contain `CI Failure:` (you were dispatched to fix a failing CI job):
 
 - Do **not** open a new PR. The PR already exists. Instead, post a comment on it:
   ```bash

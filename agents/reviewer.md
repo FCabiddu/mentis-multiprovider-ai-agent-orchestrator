@@ -53,7 +53,28 @@ Read it in full. Extract and note:
 
 ---
 
-## Step 1 — Load the draft PRs to review
+## Step 1 — Find what you are reviewing
+
+**First, establish whether this project has PRs at all** — under mentis you are frequently reviewing a purely local repository:
+
+```bash
+git remote                                    # empty → no remote, therefore no PRs
+command -v gh >/dev/null && gh auth status    # non-zero → gh unusable
+```
+
+### Case A — no remote, or `gh` unavailable (LOCAL MODE)
+
+There is no PR and there will be no CI. This is normal, not a blocker, and **it is not a reason to return NEEDS WORK**. Review the code itself:
+
+```bash
+git branch -a                                        # find the branch of the work under review
+git log --oneline main..{branch-name}                # what was added
+git diff main...{branch-name}                        # the diff to review
+```
+
+If your arguments name a branch or an issue id, use it to pick the branch; otherwise review the most recent branch/commits. Then **skip Steps 1.5, 2 and 3 entirely** (conflict gate, CI gate, CI-fix dispatch: all require a remote) and go straight to Step 4 — the code-quality and acceptance-criteria review, which is the part that matters. Judge only the code, never the absence of infrastructure.
+
+### Case B — remote and `gh` both available (PR MODE)
 
 Your arguments specify which PRs to review (format: `Review the following PRs: {comma-separated PR numbers or branch names}`).
 
@@ -174,17 +195,11 @@ Elenca la diagnosi (job, righe d'errore esatte, causa radice, fix concreto) come
 punti numerati e azionabili, poi concludi con `VERDICT: NEEDS WORK`. Non dispacci
 nessuno: il `reviewer_loop` di mentis legge il verdetto e rilancia l'implementer.
 
-### 2d — After the fix agent completes
+### 2d — Hand the fix back, don't wait for it
 
-The fix agent commits and pushes to the existing branch, triggering a new CI run automatically.
+You do not dispatch anyone and no fix agent runs while you are running: under mentis the loop is *review → orchestrator re-dispatches the implementer → review again*. So there is nothing to wait for and nothing to announce as already done.
 
-Post a comment on the PR noting what was done:
-
-```bash
-gh pr comment {pr-number} --body "🔧 **CI fix dispatched** — \`{failing_job}\` failure diagnosed ({one-line root cause}) and resolved by the {agent name}. A new commit has been pushed; CI is re-running."
-```
-
-**Stop here for this PR** — do not proceed to code review until CI is green. Move to Step 5 and report.
+Write the diagnosis as numbered, actionable points — that text is fed verbatim to whoever does the rework — and end the review with `VERDICT: NEEDS WORK`. **Stop there for this PR:** no code review (CI is still red), no comment claiming a fix was pushed. If a PR exists and `gh` works, you may post the diagnosis itself as a comment, phrased as what needs fixing, never as what was fixed.
 
 ---
 
@@ -307,9 +322,9 @@ End with: "Conflict(s) resolved and pushed. CI is re-running — re-invoke `/rev
 ### If any PR had a CI failure (Step 2d path):
 
 List each affected PR:
-- PR #{pr-number} (`{branch-name}`) — **{failing_job}** failed — diagnosed: {root cause} — dispatched to **{agent}** — fix pushed in commit `{sha if known}`
+- PR #{pr-number} (`{branch-name}`) — **{failing_job}** failed — diagnosed: {root cause} — needs: {what must change, in one line}
 
-End with: "CI fix(es) pushed to the above branch(es). CI is re-running — re-invoke `/reviewer` once the checks are green."
+End with: "CI is red on the above branch(es); the required fixes are described. Returning them for rework." — then the mandatory `VERDICT: NEEDS WORK` line (Step 6). Never claim a fix has been made or pushed: you didn't make one.
 
 ### If all PRs had green CI and code review ran:
 
@@ -326,3 +341,24 @@ NEEDS WORK: {comma-separated IDs with label in brackets, e.g. "FC-42 [Backend], 
 
 If all PRs are approved, end with: "All PRs approved and marked ready for review. Nothing has been merged by me — PRs with the Auto-merge label will merge automatically once CI is green; the rest await your go-ahead."
 If any need work, end with: "Returning {n} issue(s) to developers."
+
+---
+
+## Step 6 — The verdict line (MANDATORY, and it goes last)
+
+The orchestrator does not read your prose: it reads **one line**. The very last line of your output must be exactly one of:
+
+```
+VERDICT: APPROVED
+```
+```
+VERDICT: NEEDS WORK
+```
+
+Rules that matter more than they look:
+
+- **Nothing may follow it** — no closing sentence, no summary, no blank commentary. Last line, full stop.
+- **Write the token `VERDICT:` only once**, on that final line. Do not quote the format, do not explain when you would use each one, do not write `VERDICT: APPROVED` as an example anywhere earlier in your report. A second occurrence makes the outcome ambiguous, and the orchestrator resolves ambiguity conservatively — as NEEDS WORK, triggering a rework round that costs a full agent run.
+- **`NEEDS WORK` requires numbered, actionable problems** immediately above the verdict line: that text is fed verbatim to whoever does the rework.
+- **Missing infrastructure is never grounds for `NEEDS WORK`.** No remote, no PR, no CI (LOCAL MODE in Step 1) means you review the diff and judge the code. Only defects in the code itself justify NEEDS WORK.
+- Emit the verdict **every time**, including when you had to stop early — in that case say why in the lines above it.

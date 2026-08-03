@@ -18,6 +18,10 @@ Check if `{{ARGUMENTS}}` begins with the word `simple`, `medium`, or `full` (cas
 - **Yes** → extract it as `PROJECT_SCOPE`, strip it from the arguments, treat the remainder as the actual input.
 - **No** → **inferisci** `PROJECT_SCOPE` dall'input (simple = sito statico/landing/piccola feature; medium = prodotto con backend/piccolo SaaS/e-commerce; full = enterprise multi-team, dati complessi, production-grade). Se davvero non è inferibile e la scelta cambia sostanzialmente il documento, emetti `needs_input` (contratto) chiedendo lo scope; altrimenti assumi **medium** e annota l'assunzione. Prosegui allo Step 1 con gli argomenti originali invariati.
 
+**Scrivi lo scope nel BAD, non tenertelo in testa.** La tabella dei metadati (Step 3) ha due righe che gli agenti a valle leggono per nome, e sono l'unico modo in cui quella decisione li raggiunge:
+- `| Detail Scope |` → esattamente `simple`, `medium` o `full` (il `PROJECT_SCOPE` appena deciso): governa la profondità dei documenti a valle.
+- `| Project Scope |` → esattamente `MVP` o `Full Production` — **queste due stringhe e nessun'altra**: l'architetto le cerca alla lettera per scegliere lo stile architetturale, e scrivere `Production` gli fa mancare la corrispondenza. Mappa `simple`/`medium` → `MVP`, `full` → `Full Production`, salvo che l'utente dica esplicitamente il contrario.
+
 **Output caps:**
 
 | Scope | Max lines | User stories | Functional requirements |
@@ -90,7 +94,8 @@ Use `[ASSUMPTION]` only for things that are genuinely unknown after the user's a
 | Project       | {name}                   |
 | Version       | 1.0                      |
 | Date          | {today}                  |
-| Project Scope | {MVP / Production}       |
+| Project Scope | {MVP / Full Production}  |
+| Detail Scope  | {simple / medium / full} |
 | Author        | Product Owner            |
 
 ---
